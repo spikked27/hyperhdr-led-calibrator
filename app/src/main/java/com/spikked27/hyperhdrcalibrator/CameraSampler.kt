@@ -39,8 +39,8 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
         }
         manager.openCamera(cameraId, object : CameraDevice.StateCallback() {
             override fun onOpened(c: CameraDevice) { device = c; createSession(c, onReady, onError) }
-            override fun onDisconnected(c: CameraDevice) { c.close(); onError("Camera disconnected") }
-            override fun onError(c: CameraDevice, error: Int) { c.close(); onError("Camera error $error") }
+            override fun onDisconnected(c: CameraDevice) { c.close(); activity.runOnUiThread { onError("Camera disconnected") } }
+            override fun onError(c: CameraDevice, error: Int) { c.close(); activity.runOnUiThread { onError("Camera error $error") } }
         }, handler)
     }
 
@@ -61,7 +61,7 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
                 s.setRepeatingRequest(requestBuilder!!.build(), null, handler)
                 activity.runOnUiThread { onReady("Camera ready. Exposure/WB will lock on the white reference.") }
             }
-            override fun onConfigureFailed(s: CameraCaptureSession) = onError("Could not configure camera")
+            override fun onConfigureFailed(s: CameraCaptureSession) { activity.runOnUiThread { onError("Could not configure camera") } }
         }, handler)
     }
 
