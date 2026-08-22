@@ -23,13 +23,13 @@ data class HyperHdrServer(
 )
 
 enum class Patch(val label: String, val rgb: IntArray) {
+    WHITE("White", intArrayOf(255, 255, 255)),
     RED("Red", intArrayOf(255, 0, 0)),
     GREEN("Green", intArrayOf(0, 255, 0)),
     BLUE("Blue", intArrayOf(0, 0, 255)),
     CYAN("Cyan", intArrayOf(0, 255, 255)),
     MAGENTA("Magenta", intArrayOf(255, 0, 255)),
     YELLOW("Yellow", intArrayOf(255, 255, 0)),
-    WHITE("White", intArrayOf(255, 255, 255)),
     BLACK("Black", intArrayOf(0, 0, 0));
 }
 
