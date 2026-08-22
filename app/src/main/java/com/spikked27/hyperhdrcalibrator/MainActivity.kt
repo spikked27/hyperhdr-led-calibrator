@@ -180,7 +180,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
-        runCatching { client?.clear() }
+        Thread { runCatching { client?.clear() } }.start()
         sampler?.close()
         executor.shutdownNow()
         super.onDestroy()
