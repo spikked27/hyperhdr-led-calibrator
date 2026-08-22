@@ -40,4 +40,5 @@ dependencies {
 
     debugImplementation("androidx.compose.ui:ui-tooling:1.7.8")
     testImplementation(kotlin("test"))
+    testImplementation("org.json:json:20240303")
 }
