@@ -22,6 +22,20 @@ data class HyperHdrServer(
     val uuid: String? = null,
 )
 
+data class HyperHdrInstance(
+    val instanceId: Int,
+    val friendlyName: String,
+    val running: Boolean,
+)
+
+data class HyperHdrTarget(
+    val server: HyperHdrServer,
+    val instance: HyperHdrInstance,
+) {
+    val displayName: String
+        get() = instance.friendlyName.ifBlank { server.name }
+}
+
 enum class Patch(val label: String, val rgb: IntArray) {
     WHITE("White", intArrayOf(255, 255, 255)),
     RED("Red", intArrayOf(255, 0, 0)),
