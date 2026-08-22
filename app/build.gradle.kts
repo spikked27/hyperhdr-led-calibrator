@@ -12,8 +12,8 @@ android {
         applicationId = "com.spikked27.hyperhdrcalibrator"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.1.0-beta.3"
+        versionCode = 4
+        versionName = "0.1.0-beta.4"
         testInstrumentationRunner = "android.app.InstrumentationTestRunner"
     }
 
