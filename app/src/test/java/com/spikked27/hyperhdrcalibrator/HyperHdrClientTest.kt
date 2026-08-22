@@ -23,6 +23,17 @@ class HyperHdrClientTest {
     }
 
     @Test
+    fun blackoutCommandForTvCalibrationIsTrueBlack() {
+        val request = HyperHdrClient.colorRequest(Patch.BLACK.rgb)
+        val color = request.getJSONArray("color")
+        assertEquals(0, color.getInt(0))
+        assertEquals(0, color.getInt(1))
+        assertEquals(0, color.getInt(2))
+        assertEquals(HyperHdrClient.TEST_PRIORITY, request.getInt("priority"))
+        assertEquals(0, request.getInt("duration"))
+    }
+
+    @Test
     fun instanceSwitchTargetsChosenInstance() {
         val request = HyperHdrClient.instanceSwitchRequest(3)
         assertEquals("instance", request.getString("command"))
