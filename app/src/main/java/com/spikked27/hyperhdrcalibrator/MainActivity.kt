@@ -75,6 +75,7 @@ class MainActivity : ComponentActivity() {
     private var patchIndex by mutableStateOf(0)
     private var ledIntro by mutableStateOf(false)
     private var ledPatchPrepared by mutableStateOf(false)
+    private var tvBlackoutPrepared by mutableStateOf(false)
     private var latestMeasurement by mutableStateOf<String?>(null)
     private var resultText by mutableStateOf("")
 
@@ -93,9 +94,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent {
-            CalibratorTheme {
-                AppContent()
-            }
+            CalibratorTheme { AppContent() }
         }
         discoverTargets()
     }
@@ -111,9 +110,7 @@ class MainActivity : ComponentActivity() {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text("HyperHDR LED Calibrator", fontWeight = FontWeight.SemiBold)
                             selectedTarget?.let {
-                                if (stage != Stage.DISCOVERY) {
-                                    Text(it.displayName, style = MaterialTheme.typography.labelSmall)
-                                }
+                                if (stage != Stage.DISCOVERY) Text(it.displayName, style = MaterialTheme.typography.labelSmall)
                             }
                         }
                     }
@@ -121,9 +118,7 @@ class MainActivity : ComponentActivity() {
             }
         ) { innerPadding ->
             Surface(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
+                modifier = Modifier.fillMaxSize().padding(innerPadding),
                 color = MaterialTheme.colorScheme.background
             ) {
                 when (stage) {
@@ -139,10 +134,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun DiscoveryScreen() {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 16.dp),
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text("Choose a HyperHDR instance", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
@@ -171,10 +163,7 @@ class MainActivity : ComponentActivity() {
             }
 
             targets.forEach { target ->
-                ElevatedCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.elevatedCardColors()
-                ) {
+                ElevatedCard(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.elevatedCardColors()) {
                     Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
@@ -195,9 +184,7 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.fillMaxWidth(),
                             enabled = target.instance.running && !busy,
                             onClick = { connectToTarget(target) }
-                        ) {
-                            Text(if (busy) "Connecting…" else "Connect")
-                        }
+                        ) { Text(if (busy) "Connecting…" else "Connect") }
                     }
                 }
             }
@@ -211,91 +198,97 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun IntroScreen() {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(20.dp),
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text("Ready to calibrate", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
             StatusCard(statusMessage)
             InstructionCard("1", "Darken the room", "Turn off changing room lights and keep the phone in the same camera mode for the whole session.")
-            InstructionCard("2", "Measure the TV", "The app will tell you exactly which full-screen color to show. You change the TV image, then tap Capture.")
-            InstructionCard("3", "Measure the LED wall", "After the TV references are done, point the phone at a representative wall area. The app will change HyperHDR through the same colors automatically.")
+            InstructionCard("2", "Measure the TV", "The app turns the HyperHDR backlights completely black first, then guides you through each full-screen TV reference color.")
+            InstructionCard("3", "Measure the LED wall", "After the TV references are done, point the phone at a representative wall area. The app changes HyperHDR through the same colors automatically.")
             InstructionCard("4", "Review the correction", "The beta calculates the ICE LED calibration values but still does not write permanent HyperHDR settings automatically.")
 
-            Button(modifier = Modifier.fillMaxWidth(), onClick = { beginCalibration() }) {
-                Text("Begin calibration")
-            }
-            OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = { disconnectAndReturn() }) {
-                Text("Choose another instance")
-            }
+            Button(modifier = Modifier.fillMaxWidth(), onClick = { beginCalibration() }) { Text("Begin calibration") }
+            OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = { disconnectAndReturn() }) { Text("Choose another instance") }
         }
     }
 
     @Composable
     private fun CalibrationScreen() {
         val patch = Patch.entries[patchIndex]
+        val isLedIntro = phase == Phase.LED && ledIntro
+        val readyForCapture = when (phase) {
+            Phase.TV -> tvBlackoutPrepared
+            Phase.LED -> ledPatchPrepared
+        }
+
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+            modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            if (phase == Phase.LED && ledIntro) {
+            if (isLedIntro) {
                 Text("TV references complete", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Now point the rear camera at a representative section of the wall illuminated by the backlights. Keep the phone position fixed from here onward.",
+                    "The backlights are still off. Point the rear camera at a representative section of the wall, keep the phone fixed, then continue. The app will turn the LEDs white and lock exposure for the LED measurements.",
                     style = MaterialTheme.typography.bodyLarge
                 )
                 StatusCard(statusMessage)
-                CameraPreview(Modifier.weight(1f).fillMaxWidth())
-                Button(modifier = Modifier.fillMaxWidth(), enabled = cameraReady && !busy, onClick = { startLedMeasurements() }) {
-                    Text(if (busy) "Setting LED white…" else "I'm aimed at the wall — continue")
-                }
-                return
+            } else {
+                val progress = if (phase == Phase.TV) patchIndex + 1 else Patch.entries.size + patchIndex + 1
+                Text(
+                    if (phase == Phase.TV) "TV reference • ${patch.label}" else "LED wall • ${patch.label}",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text("Step $progress of ${Patch.entries.size * 2}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                ColorSwatch(patch)
+                Text(
+                    when {
+                        phase == Phase.TV && tvBlackoutPrepared ->
+                            "Backlights are forced OFF. Show a full-screen ${patch.label.uppercase()} image on the TV, point the center guide at the screen, wait a moment, then take the measurement."
+                        phase == Phase.TV ->
+                            "Waiting for HyperHDR to confirm the backlights are off before TV measurements can begin."
+                        ledPatchPrepared ->
+                            "HyperHDR acknowledged ${patch.label.uppercase()} at priority ${HyperHdrClient.TEST_PRIORITY}. Keep the camera aimed at the same wall area and take the measurement."
+                        else ->
+                            "The LED color has not been confirmed yet. Retry setting ${patch.label.uppercase()} before measuring."
+                    },
+                    style = MaterialTheme.typography.bodyLarge
+                )
             }
-
-            val progress = if (phase == Phase.TV) patchIndex + 1 else Patch.entries.size + patchIndex + 1
-            Text(
-                if (phase == Phase.TV) "TV reference • ${patch.label}" else "LED wall • ${patch.label}",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.SemiBold
-            )
-            Text("Step $progress of ${Patch.entries.size * 2}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-
-            ColorSwatch(patch)
-
-            Text(
-                if (phase == Phase.TV)
-                    "Show a full-screen ${patch.label.uppercase()} image on the TV. Point the center guide at the screen, wait a moment, then take the measurement."
-                else if (ledPatchPrepared)
-                    "HyperHDR acknowledged ${patch.label.uppercase()} at priority ${HyperHdrClient.TEST_PRIORITY}. Keep the camera aimed at the same wall area and take the measurement."
-                else
-                    "The LED color has not been confirmed yet. Retry setting ${patch.label.uppercase()} before measuring.",
-                style = MaterialTheme.typography.bodyLarge
-            )
 
             CameraPreview(Modifier.weight(1f).fillMaxWidth())
             cameraError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
             latestMeasurement?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
 
-            Button(
-                modifier = Modifier.fillMaxWidth(),
-                enabled = cameraReady && !busy && (phase == Phase.TV || ledPatchPrepared),
-                onClick = { captureCurrent() }
-            ) {
-                Text(
-                    when {
-                        busy -> "Measuring…"
-                        phase == Phase.TV -> "Capture TV ${patch.label}"
-                        else -> "Capture LED ${patch.label}"
+            if (isLedIntro) {
+                Button(modifier = Modifier.fillMaxWidth(), enabled = cameraReady && !busy, onClick = { startLedMeasurements() }) {
+                    Text(if (busy) "Setting LED white…" else "I'm aimed at the wall — continue")
+                }
+            } else {
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = cameraReady && !busy && readyForCapture,
+                    onClick = { captureCurrent() }
+                ) {
+                    Text(
+                        when {
+                            busy -> "Measuring…"
+                            phase == Phase.TV -> "Capture TV ${patch.label}"
+                            else -> "Capture LED ${patch.label}"
+                        }
+                    )
+                }
+
+                if (phase == Phase.TV && !tvBlackoutPrepared) {
+                    FilledTonalButton(modifier = Modifier.fillMaxWidth(), enabled = !busy, onClick = { prepareTvBlackout() }) {
+                        Text("Retry turning backlights off")
                     }
-                )
-            }
-            if (phase == Phase.LED && !ledPatchPrepared) {
-                FilledTonalButton(modifier = Modifier.fillMaxWidth(), enabled = !busy, onClick = { prepareCurrentLedPatch() }) {
-                    Text("Retry setting LED ${patch.label}")
+                }
+                if (phase == Phase.LED && !ledPatchPrepared) {
+                    FilledTonalButton(modifier = Modifier.fillMaxWidth(), enabled = !busy, onClick = { prepareCurrentLedPatch() }) {
+                        Text("Retry setting LED ${patch.label}")
+                    }
                 }
             }
         }
@@ -303,29 +296,14 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun CameraPreview(modifier: Modifier = Modifier) {
-        Box(
-            modifier = modifier
-                .clip(RoundedCornerShape(24.dp))
-                .background(Color.Black)
-        ) {
+        Box(modifier = modifier.clip(RoundedCornerShape(24.dp)).background(Color.Black)) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
-                factory = { context ->
-                    TextureView(context).also { view ->
-                        previewView = view
-                        startCameraIfPossible()
-                    }
-                },
-                update = { view ->
-                    if (previewView !== view) previewView = view
-                    startCameraIfPossible()
-                }
+                factory = { context -> TextureView(context).also { bindPreviewView(it) } },
+                update = { bindPreviewView(it) }
             )
             Box(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .fillMaxWidth(0.42f)
-                    .height(120.dp)
+                modifier = Modifier.align(Alignment.Center).fillMaxWidth(0.42f).height(120.dp)
                     .border(2.dp, Color.White.copy(alpha = 0.85f), RoundedCornerShape(16.dp))
             )
             Text(
@@ -340,14 +318,11 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun ResultsScreen() {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(20.dp),
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text("Calibration complete", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-            StatusCard("The temporary HyperHDR test priority has been cleared.")
+            StatusCard("The temporary HyperHDR test priority has been cleared and normal backlight control has been restored.")
             ElevatedCard(Modifier.fillMaxWidth()) {
                 Text(resultText, modifier = Modifier.padding(20.dp), fontFamily = FontFamily.Monospace)
             }
@@ -361,18 +336,8 @@ class MainActivity : ComponentActivity() {
         val c = Color(patch.rgb[0], patch.rgb[1], patch.rgb[2])
         val border = if (patch == Patch.BLACK || patch == Patch.WHITE) MaterialTheme.colorScheme.outline else c
         ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(76.dp)
-                    .background(c)
-                    .border(1.dp, border)
-            )
-            Text(
-                "RGB ${patch.rgb[0]}, ${patch.rgb[1]}, ${patch.rgb[2]}",
-                modifier = Modifier.padding(12.dp),
-                style = MaterialTheme.typography.labelMedium
-            )
+            Box(modifier = Modifier.fillMaxWidth().height(76.dp).background(c).border(1.dp, border))
+            Text("RGB ${patch.rgb[0]}, ${patch.rgb[1]}, ${patch.rgb[2]}", modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.labelMedium)
         }
     }
 
@@ -409,17 +374,14 @@ class MainActivity : ComponentActivity() {
         executor.execute {
             val foundTargets = mutableListOf<HyperHdrTarget>()
             val errors = mutableListOf<String>()
-            val servers = runCatching { SsdpDiscovery(this).discover() }
-                .getOrElse {
-                    errors += (it.message ?: "SSDP discovery failed")
-                    emptyList()
-                }
+            val servers = runCatching { SsdpDiscovery(this).discover() }.getOrElse {
+                errors += (it.message ?: "SSDP discovery failed")
+                emptyList()
+            }
             servers.forEach { server ->
                 val probe = HyperHdrClient(server)
                 try {
-                    probe.discoverInstances().forEach { instance ->
-                        foundTargets += HyperHdrTarget(server, instance)
-                    }
+                    probe.discoverInstances().forEach { instance -> foundTargets += HyperHdrTarget(server, instance) }
                 } catch (e: Exception) {
                     errors += "${server.name}: ${e.message}"
                 } finally {
@@ -471,56 +433,103 @@ class MainActivity : ComponentActivity() {
         patchIndex = 0
         ledIntro = false
         ledPatchPrepared = false
+        tvBlackoutPrepared = false
         latestMeasurement = null
         cameraError = null
         stage = Stage.CALIBRATION
+
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             startCameraIfPossible()
         } else {
             cameraPermission.launch(Manifest.permission.CAMERA)
         }
+        prepareTvBlackout()
+    }
+
+    private fun prepareTvBlackout() {
+        if (busy || phase != Phase.TV || tvBlackoutPrepared) return
+        busy = true
+        statusMessage = "Turning the HyperHDR backlights off for TV calibration…"
+        executor.execute {
+            try {
+                client?.setColor(Patch.BLACK.rgb) ?: error("HyperHDR session is not connected")
+                Thread.sleep(350)
+                runOnUiThread {
+                    tvBlackoutPrepared = true
+                    busy = false
+                    statusMessage = "Backlights are OFF and will remain off for all TV reference measurements. Show WHITE full-screen on the TV."
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    tvBlackoutPrepared = false
+                    busy = false
+                    statusMessage = "Could not turn the backlights off: ${e.message}"
+                }
+            }
+        }
+    }
+
+    private fun bindPreviewView(view: TextureView) {
+        if (previewView !== view) {
+            val oldSampler = sampler
+            sampler = null
+            previewView = view
+            cameraReady = false
+            oldSampler?.close()
+        }
+        startCameraIfPossible()
     }
 
     private fun startCameraIfPossible() {
         if (sampler != null) return
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return
         val view = previewView ?: return
-        sampler = CameraSampler(this, view).also { camera ->
-            camera.start(
-                onReady = { msg ->
+        val camera = CameraSampler(this, view)
+        sampler = camera
+        camera.start(
+            onReady = { msg ->
+                if (sampler === camera) {
                     cameraReady = true
                     cameraError = null
-                    statusMessage = msg
-                },
-                onError = { error ->
+                    if (!tvBlackoutPrepared && phase == Phase.TV) statusMessage = msg
+                }
+            },
+            onError = { error ->
+                if (sampler === camera) {
                     cameraReady = false
                     cameraError = error
                 }
-            )
-        }
+            }
+        )
     }
 
     private fun captureCurrent() {
         if (busy || !cameraReady) return
         val camera = sampler ?: return
-        val patch = Patch.entries[patchIndex]
+        val currentPhase = phase
+        val currentIndex = patchIndex
+        val patch = Patch.entries[currentIndex]
+        if (currentPhase == Phase.TV && !tvBlackoutPrepared) return
+        if (currentPhase == Phase.LED && !ledPatchPrepared) return
+
         busy = true
-        statusMessage = if (phase == Phase.TV) "Measuring TV ${patch.label}…" else "Measuring LED ${patch.label}…"
+        statusMessage = if (currentPhase == Phase.TV) "Measuring TV ${patch.label}…" else "Measuring LED ${patch.label}…"
 
         executor.execute {
             try {
-                if (phase == Phase.TV && patchIndex == 0) {
+                if (currentPhase == Phase.TV && currentIndex == 0) {
                     camera.setLocks(exposureLocked = false, whiteBalanceLocked = false)
                     Thread.sleep(1200)
                     camera.setLocks(exposureLocked = true, whiteBalanceLocked = true)
                     Thread.sleep(250)
                 }
-                val sample = camera.measure(samples = 15, timeoutMs = 3000)
-                if (phase == Phase.TV) tvMeasurements[patch] = sample else ledMeasurements[patch] = sample
-                val label = "Measured ${if (phase == Phase.TV) "TV" else "LED"} ${patch.label}: %.3f, %.3f, %.3f".format(sample.r, sample.g, sample.b)
 
-                if (patchIndex == Patch.entries.lastIndex) {
-                    if (phase == Phase.TV) {
+                val sample = camera.measure(samples = 15, timeoutMs = 3000)
+                if (currentPhase == Phase.TV) tvMeasurements[patch] = sample else ledMeasurements[patch] = sample
+                val label = "Measured ${if (currentPhase == Phase.TV) "TV" else "LED"} ${patch.label}: %.3f, %.3f, %.3f".format(sample.r, sample.g, sample.b)
+
+                if (currentIndex == Patch.entries.lastIndex) {
+                    if (currentPhase == Phase.TV) {
                         runOnUiThread {
                             latestMeasurement = label
                             phase = Phase.LED
@@ -528,29 +537,35 @@ class MainActivity : ComponentActivity() {
                             ledIntro = true
                             ledPatchPrepared = false
                             busy = false
-                            statusMessage = "TV references saved. Next we will drive the LEDs automatically."
+                            statusMessage = "TV references saved. Backlights remain OFF until you start the LED-wall measurements."
                         }
                     } else {
                         runCatching { client?.clear() }
                         finishSolve()
                     }
                 } else {
-                    patchIndex++
-                    if (phase == Phase.LED) {
-                        ledPatchPrepared = false
-                        prepareLedPatchBlocking(Patch.entries[patchIndex])
+                    val nextIndex = currentIndex + 1
+                    if (currentPhase == Phase.LED) {
+                        client?.setColor(Patch.entries[nextIndex].rgb) ?: error("HyperHDR session is not connected")
+                        Thread.sleep(500)
                     }
                     runOnUiThread {
+                        patchIndex = nextIndex
                         latestMeasurement = label
                         busy = false
-                        if (phase == Phase.TV) statusMessage = "Show ${Patch.entries[patchIndex].label.uppercase()} full-screen on the TV, then capture it."
+                        if (currentPhase == Phase.TV) {
+                            statusMessage = "Backlights remain OFF. Show ${Patch.entries[nextIndex].label.uppercase()} full-screen on the TV, then capture it."
+                        } else {
+                            ledPatchPrepared = true
+                            statusMessage = "HyperHDR acknowledged ${Patch.entries[nextIndex].label.uppercase()}. Take the wall measurement."
+                        }
                     }
                 }
             } catch (e: Exception) {
                 runOnUiThread {
                     busy = false
                     statusMessage = "Measurement failed: ${e.message}"
-                    if (phase == Phase.LED) ledPatchPrepared = false
+                    if (currentPhase == Phase.LED) ledPatchPrepared = false
                 }
             }
         }
@@ -588,10 +603,16 @@ class MainActivity : ComponentActivity() {
     private fun prepareCurrentLedPatch() {
         if (busy || phase != Phase.LED) return
         busy = true
+        val patch = Patch.entries[patchIndex]
         executor.execute {
             try {
-                prepareLedPatchBlocking(Patch.entries[patchIndex])
-                runOnUiThread { busy = false }
+                client?.setColor(patch.rgb) ?: error("HyperHDR session is not connected")
+                Thread.sleep(500)
+                runOnUiThread {
+                    ledPatchPrepared = true
+                    busy = false
+                    statusMessage = "HyperHDR acknowledged ${patch.label.uppercase()}. Take the wall measurement."
+                }
             } catch (e: Exception) {
                 runOnUiThread {
                     busy = false
@@ -599,15 +620,6 @@ class MainActivity : ComponentActivity() {
                     statusMessage = "Could not set LED color: ${e.message}"
                 }
             }
-        }
-    }
-
-    private fun prepareLedPatchBlocking(patch: Patch) {
-        client?.setColor(patch.rgb) ?: error("HyperHDR session is not connected")
-        Thread.sleep(500)
-        runOnUiThread {
-            ledPatchPrepared = true
-            statusMessage = "HyperHDR acknowledged ${patch.label.uppercase()}. Take the wall measurement."
         }
     }
 
@@ -627,6 +639,7 @@ class MainActivity : ComponentActivity() {
                 solved.warning?.let { appendLine("Warning: $it") }
             }
             runOnUiThread {
+                closeCamera()
                 busy = false
                 stage = Stage.RESULTS
                 statusMessage = "Calibration solved."
@@ -639,12 +652,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun restartForSameTarget() {
-        runCatching { client?.clear() }
-        sampler?.close()
+    private fun closeCamera() {
+        val old = sampler
         sampler = null
         previewView = null
         cameraReady = false
+        old?.close()
+    }
+
+    private fun restartForSameTarget() {
+        runCatching { client?.clear() }
+        closeCamera()
+        tvBlackoutPrepared = false
         stage = Stage.INTRO
         statusMessage = selectedTarget?.let { "Still connected to ${it.displayName}." } ?: "Ready."
     }
@@ -655,11 +674,9 @@ class MainActivity : ComponentActivity() {
             client?.close()
             client = null
         }
-        sampler?.close()
-        sampler = null
-        previewView = null
-        cameraReady = false
+        closeCamera()
         selectedTarget = null
+        tvBlackoutPrepared = false
         stage = Stage.DISCOVERY
         discoverTargets()
     }
@@ -670,7 +687,7 @@ class MainActivity : ComponentActivity() {
             runCatching { oldClient?.clear() }
             oldClient?.close()
         }.start()
-        sampler?.close()
+        closeCamera()
         executor.shutdownNow()
         super.onDestroy()
     }
