@@ -10,36 +10,76 @@ import java.io.OutputStreamWriter
 import java.net.InetSocketAddress
 import java.net.Socket
 
+/**
+ * Small JSON/TCP client for HyperHDR.
+ *
+ * HyperHDR can close an otherwise-idle JSON socket between the discovery/intro screen and
+ * calibration. Beta 2/3 kept that socket open, which made the first command of a later phase
+ * vulnerable to a stale connection. Control commands are intentionally short-lived now:
+ * each operation opens a fresh socket, selects the locked instance, sends the command, and
+ * closes the socket. A transient network failure is retried once.
+ */
 class HyperHdrClient(private val server: HyperHdrServer) : Closeable {
-    private var socket: Socket? = null
-    private var reader: BufferedReader? = null
-    private var writer: BufferedWriter? = null
+    @Volatile private var selectedInstanceId: Int? = null
 
     private fun newSocket(): Socket = Socket().apply {
         connect(InetSocketAddress(server.host, server.jsonPort), CONNECT_TIMEOUT_MS)
         soTimeout = READ_TIMEOUT_MS
         tcpNoDelay = true
+        keepAlive = false
     }
 
-    private fun exchange(socket: Socket, obj: JSONObject): JSONObject {
-        val w = BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8))
-        val r = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
-        w.write(obj.toString())
-        w.write("\n")
-        w.flush()
-        return validateResponse(JSONObject(r.readLine() ?: error("HyperHDR closed the JSON connection without a response")))
+    private fun sendAndRead(
+        writer: BufferedWriter,
+        reader: BufferedReader,
+        obj: JSONObject,
+    ): JSONObject {
+        writer.write(obj.toString())
+        writer.write("\n")
+        writer.flush()
+        val line = reader.readLine()
+            ?: error("HyperHDR closed the JSON connection without a response")
+        return validateResponse(JSONObject(line))
     }
 
-    private fun requestOnce(obj: JSONObject): JSONObject = newSocket().use { exchange(it, obj) }
+    private fun requestOnce(obj: JSONObject): JSONObject = newSocket().use { socket ->
+        val writer = BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8))
+        val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+        sendAndRead(writer, reader, obj)
+    }
 
-    @Synchronized
-    private fun request(obj: JSONObject): JSONObject {
-        val w = writer ?: error("Not connected to HyperHDR")
-        val r = reader ?: error("Not connected to HyperHDR")
-        w.write(obj.toString())
-        w.write("\n")
-        w.flush()
-        return validateResponse(JSONObject(r.readLine() ?: error("HyperHDR closed the JSON connection without a response")))
+    /** Execute one command against a specific instance on one fresh socket. */
+    private fun requestForInstance(instanceId: Int, obj: JSONObject): JSONObject = newSocket().use { socket ->
+        val writer = BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8))
+        val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+
+        // This is the same sequence that proved reliable during discovery/connection, but the
+        // socket exists only for this operation so there is no idle/stale session to recover.
+        sendAndRead(writer, reader, serverInfoRequest())
+        sendAndRead(writer, reader, instanceSwitchRequest(instanceId))
+        sendAndRead(writer, reader, obj)
+    }
+
+    private fun <T> retryOnce(block: () -> T): T {
+        var first: Throwable? = null
+        repeat(2) { attempt ->
+            try {
+                return block()
+            } catch (t: Throwable) {
+                if (attempt == 0) {
+                    first = t
+                    Thread.sleep(RETRY_DELAY_MS)
+                } else {
+                    val firstMessage = first?.message?.takeIf { it.isNotBlank() }
+                    val lastMessage = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
+                    error(
+                        if (firstMessage == null || firstMessage == lastMessage) lastMessage
+                        else "$lastMessage (first attempt: $firstMessage)"
+                    )
+                }
+            }
+        }
+        error("HyperHDR request failed")
     }
 
     fun ping(): Boolean = runCatching {
@@ -47,48 +87,49 @@ class HyperHdrClient(private val server: HyperHdrServer) : Closeable {
         true
     }.getOrDefault(false)
 
-    fun discoverInstances(): List<HyperHdrInstance> = parseInstances(requestOnce(serverInfoRequest()), server.name)
+    fun discoverInstances(): List<HyperHdrInstance> =
+        parseInstances(requestOnce(serverInfoRequest()), server.name)
 
+    /**
+     * Lock this client to one HyperHDR instance. No long-lived network socket is retained.
+     */
     @Synchronized
     fun connectTo(instanceId: Int) {
-        close()
-        val s = newSocket()
-        socket = s
-        writer = BufferedWriter(OutputStreamWriter(s.getOutputStream(), Charsets.UTF_8))
-        reader = BufferedReader(InputStreamReader(s.getInputStream(), Charsets.UTF_8))
-
-        try {
-            request(serverInfoRequest())
-            request(instanceSwitchRequest(instanceId))
-        } catch (e: Exception) {
-            close()
-            throw e
+        require(instanceId >= 0) { "Invalid HyperHDR instance" }
+        retryOnce {
+            newSocket().use { socket ->
+                val writer = BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8))
+                val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+                sendAndRead(writer, reader, serverInfoRequest())
+                sendAndRead(writer, reader, instanceSwitchRequest(instanceId))
+            }
         }
+        selectedInstanceId = instanceId
     }
 
+    @Synchronized
     fun setColor(rgb: IntArray, priority: Int = TEST_PRIORITY) {
-        request(colorRequest(rgb, priority))
+        val instanceId = selectedInstanceId ?: error("Not connected to a HyperHDR instance")
+        retryOnce { requestForInstance(instanceId, colorRequest(rgb, priority)) }
     }
 
+    @Synchronized
     fun clear(priority: Int = TEST_PRIORITY) {
-        request(clearRequest(priority))
+        val instanceId = selectedInstanceId ?: return
+        retryOnce { requestForInstance(instanceId, clearRequest(priority)) }
     }
 
     @Synchronized
     override fun close() {
-        runCatching { reader?.close() }
-        runCatching { writer?.close() }
-        runCatching { socket?.close() }
-        reader = null
-        writer = null
-        socket = null
+        selectedInstanceId = null
     }
 
     companion object {
         const val TEST_PRIORITY = 40
         private const val ORIGIN = "LED Calibrator" // HyperHDR schema maxLength is 20.
-        private const val CONNECT_TIMEOUT_MS = 2500
-        private const val READ_TIMEOUT_MS = 3500
+        private const val CONNECT_TIMEOUT_MS = 1800
+        private const val READ_TIMEOUT_MS = 2200
+        private const val RETRY_DELAY_MS = 180L
 
         internal fun serverInfoRequest(): JSONObject = JSONObject()
             .put("command", "serverinfo")
