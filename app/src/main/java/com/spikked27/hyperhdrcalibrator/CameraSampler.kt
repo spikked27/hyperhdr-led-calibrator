@@ -132,7 +132,7 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
 
         texture.setDefaultBufferSize(1280, 720)
         val surface = Surface(texture)
-        previewSurface?.close()
+        previewSurface?.release()
         previewSurface = surface
         val imageSurface = reader?.surface ?: run {
             releaseCameraResources()
@@ -236,7 +236,7 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
         runCatching { session?.close() }
         runCatching { device?.close() }
         runCatching { reader?.close() }
-        runCatching { previewSurface?.close() }
+        runCatching { previewSurface?.release() }
         session = null
         device = null
         reader = null
