@@ -59,16 +59,16 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
                     set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
                 }
                 s.setRepeatingRequest(requestBuilder!!.build(), null, handler)
-                activity.runOnUiThread { onReady("Camera ready. Exposure/WB will lock on first measurement.") }
+                activity.runOnUiThread { onReady("Camera ready. Exposure/WB will lock on the white reference.") }
             }
             override fun onConfigureFailed(s: CameraCaptureSession) = onError("Could not configure camera")
         }, handler)
     }
 
-    fun lockAutoControls() {
+    fun setLocks(exposureLocked: Boolean, whiteBalanceLocked: Boolean) {
         val b = requestBuilder ?: return
-        b.set(CaptureRequest.CONTROL_AE_LOCK, true)
-        b.set(CaptureRequest.CONTROL_AWB_LOCK, true)
+        b.set(CaptureRequest.CONTROL_AE_LOCK, exposureLocked)
+        b.set(CaptureRequest.CONTROL_AWB_LOCK, whiteBalanceLocked)
         session?.setRepeatingRequest(b.build(), null, handler)
     }
 
