@@ -54,18 +54,16 @@ object RawColorSampler {
         var total = 0
 
         for (ty in 0 until rows) {
-            val cy = (((ty + 0.5) * height / rows).toInt()).coerceIn(2, height - 3)
+            val cy = (((ty + 0.5) * height / rows).toInt()).coerceIn(5, height - 6)
             for (tx in 0 until columns) {
-                val cx = (((tx + 0.5) * width / columns).toInt()).coerceIn(2, width - 3)
+                val cx = (((tx + 0.5) * width / columns).toInt()).coerceIn(5, width - 6)
                 val sums = DoubleArray(3)
                 val counts = IntArray(3)
 
-                // A small 10x10 Bayer neighborhood per tile is enough to characterize local color while
-                // keeping the full RAW frame cheap to process on a phone.
-                var y = cy - 4
-                while (y <= cy + 4) {
-                    var x = cx - 4
-                    while (x <= cx + 4) {
+                // Sample a compact Bayer neighborhood around each spatial tile. Walking every pixel is
+                // intentional here: stepping by two would stay on a single Bayer parity and lose channels.
+                for (y in cy - 4..cy + 4) {
+                    for (x in cx - 4..cx + 4) {
                         val parity = (y and 1) * 2 + (x and 1)
                         val black = blackLevels[parity]
                         val raw = valueAt(x, y).toDouble()
@@ -76,9 +74,7 @@ object RawColorSampler {
                         counts[c]++
                         if (raw >= black + denom * 0.985) clipped++
                         total++
-                        x += 2
                     }
-                    y += 2
                 }
                 require(counts.all { it > 0 }) { "RAW tile did not contain all Bayer channels" }
                 tiles += Rgb(sums[0] / counts[0], sums[1] / counts[1], sums[2] / counts[2])
