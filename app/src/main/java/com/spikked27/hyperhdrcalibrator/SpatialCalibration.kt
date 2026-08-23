@@ -1,6 +1,7 @@
 package com.spikked27.hyperhdrcalibrator
 
 import kotlin.math.abs
+import kotlin.math.ln
 import kotlin.math.sqrt
 
 data class NormalizedRect(
@@ -50,12 +51,11 @@ data class WallColorResult(
     val availableTiles: Int,
     val brightnessGradient: Double,
     val chromaSpread: Double,
+    val alignmentDx: Int = 0,
+    val alignmentDy: Int = 0,
 )
 
 object SpatialCalibration {
-    // Compatibility state for the current UI loop: it always asks for WHITE first and passes the same
-    // BLACK frame object for the rest of that run. The first call builds a white-reference model; all
-    // following colors reuse the exact same wall tiles and per-tile white references.
     private var cachedBlackFrame: SpatialFrame? = null
     private var cachedWallModel: WallReferenceModel? = null
 
@@ -94,61 +94,48 @@ object SpatialCalibration {
 
         val threshold = background + (foreground - background) * 0.42
         val bright = BooleanArray(white.columns * white.rows) { luma[it] >= threshold }
-        val centerX = white.columns / 2
-        val centerY = white.rows / 2
-        var seed = centerY * white.columns + centerX
-        if (!bright[seed]) {
-            var bestDistance = Int.MAX_VALUE
-            for (y in 0 until white.rows) for (x in 0 until white.columns) {
-                val i = y * white.columns + x
-                if (!bright[i]) continue
-                val d = abs(x - centerX) + abs(y - centerY)
-                if (d < bestDistance) { bestDistance = d; seed = i }
-            }
-        }
-        require(bright[seed]) { "Could not find the TV near the center of the frame." }
+        val rect = largestComponentNear(white.columns, white.rows, bright, NormalizedRect(0.20, 0.15, 0.80, 0.85))
+            ?: error("Could not find the TV near the center of the frame.")
 
-        val visited = BooleanArray(bright.size)
-        val queue = ArrayDeque<Int>()
-        queue += seed
-        visited[seed] = true
-        var minX = white.columns
-        var minY = white.rows
-        var maxX = -1
-        var maxY = -1
-        var count = 0
-        while (queue.isNotEmpty()) {
-            val i = queue.removeFirst()
-            if (!bright[i]) continue
-            val x = i % white.columns
-            val y = i / white.columns
-            minX = minOf(minX, x); maxX = maxOf(maxX, x)
-            minY = minOf(minY, y); maxY = maxOf(maxY, y)
-            count++
-            val neighbors = intArrayOf(i - 1, i + 1, i - white.columns, i + white.columns)
-            for (j in neighbors) {
-                if (j < 0 || j >= bright.size || visited[j]) continue
-                val jx = j % white.columns
-                val jy = j / white.columns
-                if (abs(jx - x) + abs(jy - y) != 1) continue
-                visited[j] = true
-                if (bright[j]) queue += j
-            }
-        }
-
-        val area = count.toDouble() / bright.size
-        require(area in 0.06..0.88 && maxX > minX + 2 && maxY > minY + 2) {
+        val area = rect.width * rect.height
+        require(area in 0.06..0.88 && rect.width in 0.20..0.95 && rect.height in 0.12..0.90) {
             "TV detection was not reliable. Keep the full TV visible with a border of wall around it, then retry WHITE."
         }
-
-        val rect = NormalizedRect(
-            left = minX.toDouble() / white.columns,
-            top = minY.toDouble() / white.rows,
-            right = (maxX + 1).toDouble() / white.columns,
-            bottom = (maxY + 1).toDouble() / white.rows,
-        )
-        require(rect.width in 0.20..0.95 && rect.height in 0.12..0.90) { "Detected bright region does not look like a TV." }
         return rect
+    }
+
+    /**
+     * Reacquires the uniformly colored TV inside a generous search area around the previous RAW
+     * rectangle. This permits ordinary hand-held drift between video patches without moving the
+     * sampling window off the screen. BLACK intentionally keeps the most recent rectangle because
+     * there is no bright screen field to segment.
+     */
+    fun trackTvRect(frame: SpatialFrame, previous: NormalizedRect): NormalizedRect? {
+        val center = screenColor(frame, previous)
+        val centerLuma = luminance(center)
+        if (centerLuma < 0.012) return previous
+        val targetChroma = chromaticity(center)
+        val search = previous.expand(0.42, 0.48)
+        val mask = BooleanArray(frame.tiles.size)
+
+        for (y in 0 until frame.rows) for (x in 0 until frame.columns) {
+            val nx = (x + 0.5) / frame.columns
+            val ny = (y + 0.5) / frame.rows
+            if (!search.contains(nx, ny)) continue
+            val c = frame[x, y]
+            if (luminance(c) < centerLuma * 0.32) continue
+            if (chromaDistance(chromaticity(c), targetChroma) <= 0.20) {
+                mask[y * frame.columns + x] = true
+            }
+        }
+
+        val rect = largestComponentNear(frame.columns, frame.rows, mask, previous) ?: return null
+        val oldArea = previous.width * previous.height
+        val areaRatio = (rect.width * rect.height) / oldArea.coerceAtLeast(1e-6)
+        val oldAspect = previous.width / previous.height.coerceAtLeast(1e-6)
+        val newAspect = rect.width / rect.height.coerceAtLeast(1e-6)
+        val aspectRatio = newAspect / oldAspect
+        return rect.takeIf { areaRatio in 0.50..1.65 && aspectRatio in 0.70..1.42 }
     }
 
     fun screenColor(frame: SpatialFrame, tvRect: NormalizedRect): Rgb {
@@ -205,15 +192,61 @@ object SpatialCalibration {
         )
     }
 
+    /**
+     * Compare the shape of the current wall-light field with LED WHITE and find a small grid
+     * translation. The score is computed in log luminance after removing the global brightness
+     * scale, so RED/GREEN/BLUE can align to WHITE even though their absolute sensor response differs.
+     */
+    private fun findWallShift(frame: SpatialFrame, black: SpatialFrame, model: WallReferenceModel, maxShift: Int = 3): Pair<Int, Int> {
+        var bestDx = 0
+        var bestDy = 0
+        var bestScore = Double.POSITIVE_INFINITY
+
+        for (dy in -maxShift..maxShift) for (dx in -maxShift..maxShift) {
+            val residuals = mutableListOf<Double>()
+            for (n in model.tileIndices.indices) {
+                val refIndex = model.tileIndices[n]
+                val x = refIndex % model.columns
+                val y = refIndex / model.columns
+                val cx = x + dx
+                val cy = y + dy
+                if (cx !in 0 until model.columns || cy !in 0 until model.rows) continue
+                val curIndex = cy * model.columns + cx
+                val cur = subtract(frame.tiles[curIndex], black.tiles[curIndex])
+                val ref = model.whiteSignals[n]
+                val a = luminance(cur)
+                val b = luminance(ref)
+                if (a <= 1e-6 || b <= 1e-6) continue
+                residuals += ln(a / b)
+            }
+            if (residuals.size < 8) continue
+            val scale = median(residuals)
+            val score = median(residuals.map { abs(it - scale) })
+            if (score < bestScore) {
+                bestScore = score
+                bestDx = dx
+                bestDy = dy
+            }
+        }
+        return bestDx to bestDy
+    }
+
     fun wallColor(frame: SpatialFrame, black: SpatialFrame, model: WallReferenceModel): WallColorResult {
         require(frame.columns == model.columns && frame.rows == model.rows)
         requireSameGrid(frame, black)
         require(model.tileIndices.size == model.whiteSignals.size)
 
+        val (dx, dy) = findWallShift(frame, black, model)
         val ratios = mutableListOf<Rgb>()
         for (n in model.tileIndices.indices) {
-            val i = model.tileIndices[n]
-            val signal = subtract(frame.tiles[i], black.tiles[i])
+            val refIndex = model.tileIndices[n]
+            val x = refIndex % model.columns
+            val y = refIndex / model.columns
+            val cx = x + dx
+            val cy = y + dy
+            if (cx !in 0 until model.columns || cy !in 0 until model.rows) continue
+            val currentIndex = cy * model.columns + cx
+            val signal = subtract(frame.tiles[currentIndex], black.tiles[currentIndex])
             val white = model.whiteSignals[n]
             if (white.r <= 1e-6 || white.g <= 1e-6 || white.b <= 1e-6) continue
             ratios += Rgb(signal.r / white.r, signal.g / white.g, signal.b / white.b)
@@ -236,14 +269,11 @@ object SpatialCalibration {
             availableTiles = ratios.size,
             brightnessGradient = model.brightnessGradient,
             chromaSpread = spread,
+            alignmentDx = dx,
+            alignmentDy = dy,
         )
     }
 
-    /**
-     * Current UI compatibility overload. The UI iterates WHITE, RED, GREEN, BLUE, CYAN, MAGENTA,
-     * YELLOW using the same BLACK object. A new BLACK object means a new calibration run, so the first
-     * call safely establishes the WHITE spatial reference and later calls reuse it.
-     */
     @Synchronized
     fun wallColor(frame: SpatialFrame, black: SpatialFrame, tvRect: NormalizedRect): WallColorResult {
         if (cachedBlackFrame !== black || cachedWallModel == null) {
@@ -251,6 +281,61 @@ object SpatialCalibration {
             cachedWallModel = buildWallReference(frame, black, tvRect)
         }
         return wallColor(frame, black, requireNotNull(cachedWallModel))
+    }
+
+    private fun largestComponentNear(width: Int, height: Int, mask: BooleanArray, previous: NormalizedRect): NormalizedRect? {
+        val visited = BooleanArray(mask.size)
+        val targetCx = (previous.left + previous.right) / 2.0
+        val targetCy = (previous.top + previous.bottom) / 2.0
+        var best: NormalizedRect? = null
+        var bestScore = Double.NEGATIVE_INFINITY
+
+        for (start in mask.indices) {
+            if (!mask[start] || visited[start]) continue
+            val q = ArrayDeque<Int>()
+            q += start
+            visited[start] = true
+            var minX = width
+            var minY = height
+            var maxX = -1
+            var maxY = -1
+            var count = 0
+            var sx = 0.0
+            var sy = 0.0
+            while (q.isNotEmpty()) {
+                val i = q.removeFirst()
+                if (!mask[i]) continue
+                val x = i % width
+                val y = i / width
+                minX = minOf(minX, x); maxX = maxOf(maxX, x)
+                minY = minOf(minY, y); maxY = maxOf(maxY, y)
+                sx += x; sy += y; count++
+                val neighbors = intArrayOf(i - 1, i + 1, i - width, i + width)
+                for (j in neighbors) {
+                    if (j !in mask.indices || visited[j]) continue
+                    val jx = j % width
+                    val jy = j / width
+                    if (abs(jx - x) + abs(jy - y) != 1) continue
+                    visited[j] = true
+                    if (mask[j]) q += j
+                }
+            }
+            if (count < (width * height * 0.01).toInt().coerceAtLeast(6)) continue
+            val cx = (sx / count + 0.5) / width
+            val cy = (sy / count + 0.5) / height
+            val distance = sqrt((cx - targetCx) * (cx - targetCx) + (cy - targetCy) * (cy - targetCy))
+            val score = count - distance * width * height * 0.25
+            if (score > bestScore) {
+                bestScore = score
+                best = NormalizedRect(
+                    minX.toDouble() / width,
+                    minY.toDouble() / height,
+                    (maxX + 1).toDouble() / width,
+                    (maxY + 1).toDouble() / height,
+                )
+            }
+        }
+        return best
     }
 
     private fun requireSameGrid(a: SpatialFrame, b: SpatialFrame) {
@@ -286,8 +371,8 @@ object SpatialCalibration {
 
     private fun chromaDistance(a: Rgb, b: Rgb): Double = sqrt(
         (a.r - b.r) * (a.r - b.r) +
-        (a.g - b.g) * (a.g - b.g) +
-        (a.b - b.b) * (a.b - b.b)
+            (a.g - b.g) * (a.g - b.g) +
+            (a.b - b.b) * (a.b - b.b)
     )
 
     private fun luminance(v: Rgb): Double = (v.r + 2.0 * v.g + v.b) / 4.0
