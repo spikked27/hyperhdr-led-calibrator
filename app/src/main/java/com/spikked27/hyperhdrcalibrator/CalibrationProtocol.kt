@@ -3,13 +3,19 @@ package com.spikked27.hyperhdrcalibrator
 /**
  * Shared protocol between the automated camera workflow and the companion calibration video.
  *
- * The app does not rely on wall-clock timing to identify TV colors; it recognizes the actual
- * full-screen patch. These timings are deliberately generous so RAW bursts can complete even on
- * slower phones or after a brief YouTube playback hiccup.
+ * Beta 9 no longer identifies video state from the apparent RGB color. Each TV patch carries a
+ * small machine-readable marker near the screen edge while the center remains a clean calibration
+ * field. The marker is outside the RAW measurement ROI and lets the app resynchronize after a
+ * dropped/late preview frame instead of hanging forever on one expected color.
  */
 object CalibrationProtocol {
-    const val VIDEO_LEAD_IN_SECONDS = 6
-    const val TV_PATCH_SECONDS = 10
+    // The video is paused on this unmarked BLACK opening while the app illuminates the wall and
+    // snaps a 16:9 border to the physical TV. Playback starts only after that border is locked.
+    const val VIDEO_LEAD_IN_SECONDS = 8
+
+    // Beta 8's 10 s dwell was too close to the worst-case RAW burst/settle time. Fifteen seconds
+    // gives the phone enough room to recognize the marker, lock exposure, and collect five frames.
+    const val TV_PATCH_SECONDS = 15
     const val FINAL_BLACK_SECONDS = 120
 
     val tvSequence: List<Patch> = listOf(
@@ -34,10 +40,14 @@ object CalibrationProtocol {
         Patch.BLACK,
     )
 
-    const val PREVIEW_SAMPLE_WIDTH = 72
-    const val PREVIEW_SAMPLE_HEIGHT = 40
-    const val PREVIEW_TICK_MS = 120L
-    const val STABLE_PREVIEW_FRAMES = 4
+    // Preview analysis is intentionally much higher resolution than Beta 8's 72x40 bitmap. It is
+    // still lightweight compared with RAW capture and is used only for geometry + marker decoding.
+    const val PREVIEW_SAMPLE_WIDTH = 320
+    const val PREVIEW_SAMPLE_HEIGHT = 180
+    const val PREVIEW_TICK_MS = 100L
+    const val STABLE_MARKER_FRAMES = 3
+    const val STABLE_BORDER_FRAMES = 6
+
     const val LED_SETTLE_MS = 700L
     const val WHITE_EXPOSURE_SETTLE_MS = 1200L
 }
