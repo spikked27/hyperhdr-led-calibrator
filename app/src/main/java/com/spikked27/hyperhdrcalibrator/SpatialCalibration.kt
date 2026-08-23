@@ -36,6 +36,14 @@ data class SpatialFrame(
     operator fun get(x: Int, y: Int): Rgb = tiles[y * columns + x]
 }
 
+data class WallReferenceModel(
+    val columns: Int,
+    val rows: Int,
+    val tileIndices: List<Int>,
+    val whiteSignals: List<Rgb>,
+    val brightnessGradient: Double,
+)
+
 data class WallColorResult(
     val rgb: Rgb,
     val tilesUsed: Int,
@@ -47,21 +55,17 @@ data class WallColorResult(
 object SpatialCalibration {
     fun medianCombine(frames: List<SpatialFrame>): SpatialFrame {
         require(frames.isNotEmpty())
-        val c = frames.first().columns
-        val r = frames.first().rows
-        require(frames.all { it.columns == c && it.rows == r })
-        fun median(values: List<Double>): Double {
-            val s = values.sorted()
-            return if (s.size % 2 == 1) s[s.size / 2] else (s[s.size / 2 - 1] + s[s.size / 2]) / 2.0
-        }
-        val tiles = (0 until c * r).map { i ->
+        val columns = frames.first().columns
+        val rows = frames.first().rows
+        require(frames.all { it.columns == columns && it.rows == rows })
+        val tiles = (0 until columns * rows).map { i ->
             Rgb(
                 median(frames.map { it.tiles[i].r }),
                 median(frames.map { it.tiles[i].g }),
                 median(frames.map { it.tiles[i].b }),
             )
         }
-        return SpatialFrame(c, r, tiles, median(frames.map { it.clippedFraction }))
+        return SpatialFrame(columns, rows, tiles, median(frames.map { it.clippedFraction }))
     }
 
     fun detectTvRect(white: SpatialFrame): NormalizedRect {
@@ -79,11 +83,11 @@ object SpatialCalibration {
         }
         val foreground = percentile(centerValues, 0.90)
         require(foreground > background + 0.02) {
-            "Could not distinguish the bright TV from the surrounding wall. Show the WHITE patch and frame the entire screen with some wall visible around it."
+            "Could not distinguish the bright TV from the surrounding wall. Show the WHITE patch and keep the entire TV plus some wall visible."
         }
+
         val threshold = background + (foreground - background) * 0.42
         val bright = BooleanArray(white.columns * white.rows) { luma[it] >= threshold }
-
         val centerX = white.columns / 2
         val centerY = white.rows / 2
         var seed = centerY * white.columns + centerX
@@ -91,13 +95,12 @@ object SpatialCalibration {
             var bestDistance = Int.MAX_VALUE
             for (y in 0 until white.rows) for (x in 0 until white.columns) {
                 val i = y * white.columns + x
-                if (bright[i]) {
-                    val d = abs(x - centerX) + abs(y - centerY)
-                    if (d < bestDistance) { bestDistance = d; seed = i }
-                }
+                if (!bright[i]) continue
+                val d = abs(x - centerX) + abs(y - centerY)
+                if (d < bestDistance) { bestDistance = d; seed = i }
             }
         }
-        require(bright[seed]) { "Could not find the TV in the center of the frame." }
+        require(bright[seed]) { "Could not find the TV near the center of the frame." }
 
         val visited = BooleanArray(bright.size)
         val queue = ArrayDeque<Int>()
@@ -116,8 +119,8 @@ object SpatialCalibration {
             minX = minOf(minX, x); maxX = maxOf(maxX, x)
             minY = minOf(minY, y); maxY = maxOf(maxY, y)
             count++
-            val n = intArrayOf(i - 1, i + 1, i - white.columns, i + white.columns)
-            for (j in n) {
+            val neighbors = intArrayOf(i - 1, i + 1, i - white.columns, i + white.columns)
+            for (j in neighbors) {
                 if (j < 0 || j >= bright.size || visited[j]) continue
                 val jx = j % white.columns
                 val jy = j / white.columns
@@ -143,69 +146,100 @@ object SpatialCalibration {
     }
 
     fun screenColor(frame: SpatialFrame, tvRect: NormalizedRect): Rgb {
-        val rect = tvRect.inset(0.16)
-        val values = tilesInside(frame, rect).map { it.second }
+        val values = tilesInside(frame, tvRect.inset(0.16)).map { it.second }
         require(values.size >= 4) { "Not enough sensor tiles inside the detected TV area" }
         return robustRgb(values)
     }
 
-    fun wallColor(frame: SpatialFrame, black: SpatialFrame, tvRect: NormalizedRect): WallColorResult {
-        require(frame.columns == black.columns && frame.rows == black.rows)
+    fun buildWallReference(white: SpatialFrame, black: SpatialFrame, tvRect: NormalizedRect): WallReferenceModel {
+        requireSameGrid(white, black)
         val inner = tvRect.expand(0.035, 0.055)
         val outer = tvRect.expand(0.42, 0.62)
-        val candidates = mutableListOf<Rgb>()
-        val brightness = mutableListOf<Double>()
+        val candidates = mutableListOf<Pair<Int, Rgb>>()
+        val luminances = mutableListOf<Double>()
 
-        for (y in 0 until frame.rows) for (x in 0 until frame.columns) {
-            val nx = (x + 0.5) / frame.columns
-            val ny = (y + 0.5) / frame.rows
+        for (y in 0 until white.rows) for (x in 0 until white.columns) {
+            val nx = (x + 0.5) / white.columns
+            val ny = (y + 0.5) / white.rows
             if (!outer.contains(nx, ny) || inner.contains(nx, ny)) continue
-            val a = frame[x, y]
-            val b = black[x, y]
-            val v = Rgb(
-                (a.r - b.r).coerceAtLeast(0.0),
-                (a.g - b.g).coerceAtLeast(0.0),
-                (a.b - b.b).coerceAtLeast(0.0),
-            )
-            val l = luminance(v)
+            val i = y * white.columns + x
+            val signal = subtract(white.tiles[i], black.tiles[i])
+            val l = luminance(signal)
             if (l > 1e-6) {
-                candidates += v
-                brightness += l
+                candidates += i to signal
+                luminances += l
             }
         }
-        require(candidates.size >= 8) { "Not enough illuminated wall is visible around the TV. Frame more wall around the screen." }
+        require(candidates.size >= 12) { "Not enough illuminated wall is visible around the TV. Frame more wall around the screen." }
 
-        // Preserve the real spatial gradient for diagnostics, but deliberately remove its magnitude from
-        // the color estimate: each tile votes by chromaticity, not by how bright it is. Bright LED hot
-        // spots therefore cannot dominate the answer just because they are closer to the strip.
-        val high = percentile(brightness, 0.90)
-        val usable = candidates.zip(brightness)
-            .filter { (_, l) -> l >= high * 0.10 }
-            .map { (rgb, _) -> chromaticity(rgb) }
-        require(usable.size >= 6) { "The wall signal is too weak compared with the brightest LED area." }
+        val p90 = percentile(luminances, 0.90)
+        val brightEnough = candidates.filter { (_, signal) -> luminance(signal) >= p90 * 0.08 }
+        require(brightEnough.size >= 10) { "The reflected LED white signal is too weak across the visible wall." }
 
-        val first = robustRgb(usable)
-        val firstC = chromaticity(first)
-        val distances = usable.map { chromaDistance(it, firstC) }
-        val medD = median(distances)
-        val mad = median(distances.map { abs(it - medD) }).coerceAtLeast(0.002)
-        val filtered = usable.filterIndexed { i, _ -> distances[i] <= medD + 3.5 * mad }
-        val used = if (filtered.size >= 6) filtered else usable
-        val result = chromaticity(robustRgb(used))
+        // Remove obvious colored objects/shadows using WHITE only, then lock this exact spatial mask for
+        // every LED color. Keeping one mask is important: all colors must see the same geometry.
+        val whiteChromas = brightEnough.map { (_, signal) -> chromaticity(signal) }
+        val center = robustRgb(whiteChromas)
+        val distances = whiteChromas.map { chromaDistance(it, center) }
+        val medianDistance = median(distances)
+        val mad = median(distances.map { abs(it - medianDistance) }).coerceAtLeast(0.002)
+        val retained = brightEnough.filterIndexed { i, _ -> distances[i] <= medianDistance + 4.0 * mad }
+            .ifEmpty { brightEnough }
+        require(retained.size >= 8) { "Too little neutral wall remains after rejecting colored/shadowed regions." }
 
-        val positiveBrightness = brightness.filter { it >= high * 0.10 }
-        val p10 = percentile(positiveBrightness, 0.10)
-        val p90 = percentile(positiveBrightness, 0.90)
-        val gradient = if (p10 <= 1e-9) 0.0 else p90 / p10
-        val spread = used.maxOfOrNull { chromaDistance(it, result) } ?: 0.0
+        val retainedLuma = retained.map { luminance(it.second) }
+        val low = percentile(retainedLuma, 0.10)
+        val high = percentile(retainedLuma, 0.90)
+        val gradient = if (low <= 1e-9) Double.POSITIVE_INFINITY else high / low
+
+        return WallReferenceModel(
+            columns = white.columns,
+            rows = white.rows,
+            tileIndices = retained.map { it.first },
+            whiteSignals = retained.map { it.second },
+            brightnessGradient = gradient,
+        )
+    }
+
+    fun wallColor(frame: SpatialFrame, black: SpatialFrame, model: WallReferenceModel): WallColorResult {
+        require(frame.columns == model.columns && frame.rows == model.rows)
+        requireSameGrid(frame, black)
+        require(model.tileIndices.size == model.whiteSignals.size)
+
+        val ratios = mutableListOf<Rgb>()
+        for (n in model.tileIndices.indices) {
+            val i = model.tileIndices[n]
+            val signal = subtract(frame.tiles[i], black.tiles[i])
+            val white = model.whiteSignals[n]
+            if (white.r <= 1e-6 || white.g <= 1e-6 || white.b <= 1e-6) continue
+            ratios += Rgb(signal.r / white.r, signal.g / white.g, signal.b / white.b)
+        }
+        require(ratios.size >= 8) { "Too few wall tiles had enough signal for this LED color." }
+
+        // Channel-wise division by the WHITE measurement at the same tile cancels the wall's brightness
+        // falloff, lens shading, much of the wall reflectance, and the different TV-vs-wall exposure.
+        // We then reject only chromatic outliers; brightness gradient itself is not an error condition.
+        val center = robustRgb(ratios)
+        val centerChroma = chromaticity(center)
+        val distances = ratios.map { chromaDistance(chromaticity(it), centerChroma) }
+        val medianDistance = median(distances)
+        val mad = median(distances.map { abs(it - medianDistance) }).coerceAtLeast(0.002)
+        val filtered = ratios.filterIndexed { i, _ -> distances[i] <= medianDistance + 4.0 * mad }
+        val used = if (filtered.size >= 8) filtered else ratios
+        val result = robustRgb(used)
+        val spread = used.maxOfOrNull { chromaDistance(chromaticity(it), chromaticity(result)) } ?: 0.0
 
         return WallColorResult(
             rgb = result,
             tilesUsed = used.size,
-            availableTiles = candidates.size,
-            brightnessGradient = gradient,
+            availableTiles = ratios.size,
+            brightnessGradient = model.brightnessGradient,
             chromaSpread = spread,
         )
+    }
+
+    private fun requireSameGrid(a: SpatialFrame, b: SpatialFrame) {
+        require(a.columns == b.columns && a.rows == b.rows) { "Spatial measurements use different grids" }
     }
 
     private fun tilesInside(frame: SpatialFrame, rect: NormalizedRect): List<Pair<Int, Rgb>> {
@@ -217,6 +251,12 @@ object SpatialCalibration {
         }
         return result
     }
+
+    private fun subtract(a: Rgb, b: Rgb) = Rgb(
+        (a.r - b.r).coerceAtLeast(0.0),
+        (a.g - b.g).coerceAtLeast(0.0),
+        (a.b - b.b).coerceAtLeast(0.0),
+    )
 
     private fun robustRgb(values: List<Rgb>): Rgb = Rgb(
         median(values.map { it.r }),
