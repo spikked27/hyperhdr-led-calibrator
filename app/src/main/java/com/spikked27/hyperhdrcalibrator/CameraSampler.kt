@@ -220,7 +220,7 @@ class CameraSampler(
 
     private fun resultForSelectedStream(result: TotalCaptureResult): CaptureResult {
         val physicalId = selectedPhysicalId
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && physicalId != null) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && physicalId != null) {
             return result.getPhysicalCameraTotalResults()[physicalId] ?: result
         }
         return result
