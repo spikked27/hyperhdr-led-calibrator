@@ -12,6 +12,7 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.params.OutputConfiguration
 import android.media.Image
 import android.media.ImageReader
 import android.os.Build
@@ -23,10 +24,13 @@ import android.view.TextureView
 import java.nio.ByteOrder
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
-import kotlin.math.abs
 import kotlin.math.roundToInt
 
-class CameraSampler(private val activity: Activity, private val preview: TextureView) {
+class CameraSampler(
+    private val activity: Activity,
+    private val preview: TextureView,
+    private val requestedChoice: CameraChoice? = null,
+) {
     private data class Exposure(val timeNs: Long, val iso: Int)
 
     private val manager = activity.getSystemService(Activity.CAMERA_SERVICE) as CameraManager
@@ -42,8 +46,9 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
     private var previewSurface: Surface? = null
     private var requestBuilder: CaptureRequest.Builder? = null
     private var selectedChars: CameraCharacteristics? = null
-    private var selectedCameraId: String? = null
-    private var selectedEquivalentMm: Double? = null
+    private var selectedOpenChars: CameraCharacteristics? = null
+    private var selectedChoice: CameraChoice? = null
+    private var selectedPhysicalId: String? = null
     private var rawPattern: BayerPattern? = null
     private var rawWhiteLevel: Int = 1023
     private var rawBlackLevels = doubleArrayOf(0.0, 0.0, 0.0, 0.0)
@@ -54,7 +59,7 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
     private var freshManualLock = false
     @Volatile private var latestYuv: Rgb? = null
     @Volatile private var yuvFrameNumber: Long = 0
-    private val rawQueue = LinkedBlockingQueue<RawFrameStats>(4)
+    private val rawQueue = LinkedBlockingQueue<RawFrameStats>(8)
 
     @Volatile var cameraSummary: String = "Camera not ready"
         private set
@@ -62,6 +67,8 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
         private set
     @Volatile var lastMeasurementSummary: String = ""
         private set
+
+    val cameraChoiceKey: String? get() = selectedChoice?.key
 
     private var readyCallback: ((String) -> Unit)? = null
     private var errorCallback: ((String) -> Unit)? = null
@@ -88,21 +95,6 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
         if (preview.isAvailable) openCameraWhenReady()
     }
 
-    private fun cameraCandidates(): List<CameraCandidate> = manager.cameraIdList.map { id ->
-        val c = manager.getCameraCharacteristics(id)
-        val facing = c.get(CameraCharacteristics.LENS_FACING)
-        val caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.toSet().orEmpty()
-        val raw = caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW)
-        val sensorWidth = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)?.width?.toDouble()
-        val focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.map { it.toDouble() }.orEmpty()
-        val eq = if (sensorWidth != null && sensorWidth > 0.0) focal.map { it * 36.0 / sensorWidth } else focal.map { it * 4.0 }
-        val supportsOneX = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val r = c.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
-            r == null || (r.lower <= 1.0f && r.upper >= 1.0f)
-        } else true
-        CameraCandidate(id, facing == CameraCharacteristics.LENS_FACING_BACK, raw, eq, supportsOneX)
-    }
-
     @Synchronized
     private fun openCameraWhenReady() {
         if (closed || opening || device != null || !preview.isAvailable) return
@@ -113,16 +105,20 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
 
         opening = true
         try {
-            val chosen = CameraSelection.chooseMain(cameraCandidates())
-            val cameraId = chosen.id
-            val chars = manager.getCameraCharacteristics(cameraId)
-            selectedCameraId = cameraId
-            selectedChars = chars
-            selectedEquivalentMm = chosen.equivalentFocalLengthsMm.minByOrNull { abs(it - 24.0) }
+            val choices = CameraCatalog.list(manager)
+            val chosen = requestedChoice?.let { wanted -> choices.firstOrNull { it.key == wanted.key } }
+                ?: CameraSelection.chooseMain(choices)
+            selectedChoice = chosen
+            selectedPhysicalId = chosen.physicalId
 
-            val caps = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.toSet().orEmpty()
+            val openChars = manager.getCameraCharacteristics(chosen.openId)
+            val streamChars = manager.getCameraCharacteristics(chosen.streamId)
+            selectedOpenChars = openChars
+            selectedChars = streamChars
+
+            val caps = streamChars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.toSet().orEmpty()
             manualSensorSupported = caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR)
-            val arrangement = chars.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)
+            val arrangement = streamChars.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)
             rawPattern = when (arrangement) {
                 CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB -> BayerPattern.RGGB
                 CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_GRBG -> BayerPattern.GRBG
@@ -130,11 +126,12 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
                 CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_BGGR -> BayerPattern.BGGR
                 else -> null
             }
-            val rawSizes = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.getOutputSizes(ImageFormat.RAW_SENSOR).orEmpty()
-            rawSupported = caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW) && manualSensorSupported && rawPattern != null && rawSizes.isNotEmpty()
+            val rawSizes = streamChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                ?.getOutputSizes(ImageFormat.RAW_SENSOR).orEmpty()
+            rawSupported = chosen.rawSupported && manualSensorSupported && rawPattern != null && rawSizes.isNotEmpty()
 
-            chars.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)?.let { rawWhiteLevel = it }
-            chars.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)?.let { black ->
+            streamChars.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)?.let { rawWhiteLevel = it }
+            streamChars.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)?.let { black ->
                 rawBlackLevels = doubleArrayOf(
                     black.getOffsetForIndex(0, 0).toDouble(), black.getOffsetForIndex(1, 0).toDouble(),
                     black.getOffsetForIndex(0, 1).toDouble(), black.getOffsetForIndex(1, 1).toDouble(),
@@ -144,7 +141,7 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
             if (rawSupported) {
                 val rawSize = rawSizes.minByOrNull { it.width.toLong() * it.height.toLong() } ?: error("No RAW output size")
                 rawReader?.close()
-                rawReader = ImageReader.newInstance(rawSize.width, rawSize.height, ImageFormat.RAW_SENSOR, 2).also { ir ->
+                rawReader = ImageReader.newInstance(rawSize.width, rawSize.height, ImageFormat.RAW_SENSOR, 3).also { ir ->
                     ir.setOnImageAvailableListener({ reader ->
                         reader.acquireNextImage()?.use { image ->
                             runCatching { sampleRawCenter(image) }.onSuccess { rawQueue.offer(it) }
@@ -153,9 +150,12 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
                 }
                 yuvReader?.close(); yuvReader = null
             } else {
-                val sizes = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.getOutputSizes(ImageFormat.YUV_420_888)
-                val size = sizes?.filter { it.width >= 1280 && it.height >= 720 }?.minByOrNull { it.width * it.height }
-                    ?: sizes?.firstOrNull() ?: error("Camera has no YUV output")
+                val sizes = streamChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                    ?.getOutputSizes(ImageFormat.YUV_420_888)
+                val size = sizes?.filter { it.width >= 1280 && it.height >= 720 }
+                    ?.minByOrNull { it.width.toLong() * it.height.toLong() }
+                    ?: sizes?.firstOrNull()
+                    ?: error("Camera has no YUV output")
                 yuvReader?.close()
                 yuvReader = ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 3).also { ir ->
                     ir.setOnImageAvailableListener({ reader ->
@@ -168,10 +168,10 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
                 rawReader?.close(); rawReader = null
             }
 
-            val eqText = selectedEquivalentMm?.let { "~${it.roundToInt()} mm eq" } ?: "1×"
-            cameraSummary = "Main rear camera $eqText • ${if (rawSupported) "RAW_SENSOR" else "YUV fallback"}"
+            val streamPath = if (chosen.physicalId != null) "physical sensor ${chosen.streamId}" else "camera ${chosen.streamId}"
+            cameraSummary = "${chosen.displayName()} • $streamPath • ${if (rawSupported) "RAW_SENSOR" else "YUV fallback"}"
 
-            manager.openCamera(cameraId, object : CameraDevice.StateCallback() {
+            manager.openCamera(chosen.openId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     opening = false
                     if (closed || !preview.isAvailable) { camera.close(); return }
@@ -192,28 +192,80 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
     }
 
     private fun applyOneX(builder: CaptureRequest.Builder) {
-        val c = selectedChars ?: return
+        // A physical-camera stream is already pinned to one lens; asking the logical camera to zoom can
+        // cause OEM-specific lens switching. Only apply 1x to a normal/logical stream.
+        if (selectedPhysicalId != null) return
+        val c = selectedOpenChars ?: selectedChars ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val range = c.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
-            if (range == null || (range.lower <= 1.0f && range.upper >= 1.0f)) builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, 1.0f)
+            if (range == null || (range.lower <= 1.0f && range.upper >= 1.0f)) {
+                builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, 1.0f)
+            }
         } else {
-            c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)?.let { builder.set(CaptureRequest.SCALER_CROP_REGION, it) }
+            c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)?.let {
+                builder.set(CaptureRequest.SCALER_CROP_REGION, it)
+            }
         }
+    }
+
+    private fun <T> setForSelectedStream(builder: CaptureRequest.Builder, key: CaptureRequest.Key<T>, value: T) {
+        builder.set(key, value)
+        val physicalId = selectedPhysicalId
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && physicalId != null) {
+            runCatching { builder.setPhysicalCameraKey(key, value, physicalId) }
+        }
+    }
+
+    private fun resultForSelectedStream(result: TotalCaptureResult): CaptureResult {
+        val physicalId = selectedPhysicalId
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && physicalId != null) {
+            return result.getPhysicalCameraTotalResults()[physicalId] ?: result
+        }
+        return result
     }
 
     private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+            val selectedResult = resultForSelectedStream(result)
             if (manualExposure == null) {
-                val t = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
-                val iso = result.get(CaptureResult.SENSOR_SENSITIVITY)
+                val t = selectedResult.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                val iso = selectedResult.get(CaptureResult.SENSOR_SENSITIVITY)
                 if (t != null && iso != null) latestAutoExposure = Exposure(t, iso)
             }
         }
     }
 
+    private fun newRequestBuilder(camera: CameraDevice, template: Int): CaptureRequest.Builder {
+        val physicalId = selectedPhysicalId
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && physicalId != null) {
+            camera.createCaptureRequest(template, setOf(physicalId))
+        } else {
+            camera.createCaptureRequest(template)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun createConfiguredSession(
+        camera: CameraDevice,
+        surfaces: List<Surface>,
+        callback: CameraCaptureSession.StateCallback,
+    ) {
+        val physicalId = selectedPhysicalId
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && physicalId != null) {
+            val outputs = surfaces.map { surface ->
+                OutputConfiguration(surface).apply { setPhysicalCameraId(physicalId) }
+            }
+            camera.createCaptureSessionByOutputConfigurations(outputs, callback, handler)
+        } else {
+            camera.createCaptureSession(surfaces, callback, handler)
+        }
+    }
+
     private fun createSession(camera: CameraDevice) {
         val texture = preview.surfaceTexture
-        if (texture == null || !preview.isAvailable) { releaseCameraResources(); postError("Camera preview surface is not ready"); return }
+        if (texture == null || !preview.isAvailable) {
+            releaseCameraResources(); postError("Camera preview surface is not ready"); return
+        }
         texture.setDefaultBufferSize(1280, 720)
         val surface = Surface(texture)
         previewSurface?.release(); previewSurface = surface
@@ -221,11 +273,11 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
             releaseCameraResources(); postError("Camera measurement surface is unavailable"); return
         }
 
-        camera.createCaptureSession(listOf(surface, measurementSurface), object : CameraCaptureSession.StateCallback() {
+        val callback = object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(configured: CameraCaptureSession) {
                 if (closed || device !== camera || !preview.isAvailable) { configured.close(); return }
                 session = configured
-                requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                requestBuilder = newRequestBuilder(camera, CameraDevice.TEMPLATE_PREVIEW).apply {
                     addTarget(surface)
                     if (!rawSupported) addTarget(measurementSurface)
                     set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
@@ -234,10 +286,18 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
                     applyOneX(this)
                 }
                 configured.setRepeatingRequest(requestBuilder!!.build(), captureCallback, handler)
-                activity.runOnUiThread { readyCallback?.invoke("$cameraSummary. White reference will establish fixed ISO and shutter for each calibration half.") }
+                activity.runOnUiThread {
+                    readyCallback?.invoke("$cameraSummary. Only the small center spot is measured; the rest of the preview may have a gradient.")
+                }
             }
-            override fun onConfigureFailed(configured: CameraCaptureSession) { configured.close(); postError("Could not configure camera") }
-        }, handler)
+
+            override fun onConfigureFailed(configured: CameraCaptureSession) {
+                configured.close()
+                postError("Could not configure ${selectedChoice?.displayName() ?: "camera"}. Try another rear lens.")
+            }
+        }
+
+        createConfiguredSession(camera, listOf(surface, measurementSurface), callback)
     }
 
     private fun clampExposure(exposure: Exposure): Exposure {
@@ -254,15 +314,15 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
         val b = requestBuilder ?: return
         val e = clampExposure(exposure)
         manualExposure = e
+        setForSelectedStream(b, CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+        setForSelectedStream(b, CaptureRequest.SENSOR_EXPOSURE_TIME, e.timeNs)
+        setForSelectedStream(b, CaptureRequest.SENSOR_SENSITIVITY, e.iso)
         b.set(CaptureRequest.CONTROL_AE_LOCK, false)
-        b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-        b.set(CaptureRequest.SENSOR_EXPOSURE_TIME, e.timeNs)
-        b.set(CaptureRequest.SENSOR_SENSITIVITY, e.iso)
         b.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
         b.set(CaptureRequest.CONTROL_AWB_LOCK, whiteBalanceLocked)
         applyOneX(b)
         session?.setRepeatingRequest(b.build(), captureCallback, handler)
-        exposureSummary = "ISO ${e.iso} • 1/${(1_000_000_000.0 / e.timeNs).roundToInt().coerceAtLeast(1)} s (${e.timeNs / 1_000_000.0} ms)"
+        exposureSummary = "ISO ${e.iso} • 1/${(1_000_000_000.0 / e.timeNs).roundToInt().coerceAtLeast(1)} s (${"%.2f".format(e.timeNs / 1_000_000.0)} ms)"
     }
 
     fun setLocks(exposureLocked: Boolean, whiteBalanceLocked: Boolean) {
@@ -270,7 +330,7 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
         if (!exposureLocked) {
             manualExposure = null
             freshManualLock = false
-            b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            setForSelectedStream(b, CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             b.set(CaptureRequest.CONTROL_AE_LOCK, false)
             b.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
             b.set(CaptureRequest.CONTROL_AWB_LOCK, whiteBalanceLocked)
@@ -281,7 +341,7 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
         }
 
         if (manualSensorSupported) {
-            val deadline = System.currentTimeMillis() + 900
+            val deadline = System.currentTimeMillis() + 1200
             var e = latestAutoExposure
             while (e == null && System.currentTimeMillis() < deadline) { Thread.sleep(20); e = latestAutoExposure }
             requireNotNull(e) { "Camera did not report ISO/shutter from auto exposure" }
@@ -296,7 +356,8 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
     }
 
     fun measure(samples: Int = 12, timeoutMs: Long = 2500): Rgb {
-        return if (rawSupported) measureRaw(samples.coerceIn(5, 7), timeoutMs.coerceAtLeast(5000)) else measureYuv(samples, timeoutMs)
+        return if (rawSupported) measureRaw(samples.coerceIn(5, 7), timeoutMs.coerceAtLeast(5000))
+        else measureYuv(samples, timeoutMs)
     }
 
     private fun measureRaw(samples: Int, timeoutMs: Long): Rgb {
@@ -311,6 +372,8 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
                 rawQueue.poll(1400, TimeUnit.MILLISECONDS)?.let { values += it }
             }
             require(values.size >= 3) { "Not enough RAW frames (${values.size}/$samples)" }
+
+            fun median(xs: List<Double>) = xs.sorted()[xs.size / 2]
             val clipped = values.map { it.clippedFraction }.average()
             if (freshManualLock && clipped > 0.01 && attempt < 3) {
                 reduceManualExposure()
@@ -318,14 +381,31 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
                 continue
             }
             freshManualLock = false
-            require(clipped <= 0.02) { "RAW measurement is clipping ${"%.1f".format(clipped * 100)}% of sampled pixels; re-measure the white reference" }
-            fun median(xs: List<Double>) = xs.sorted()[xs.size / 2]
+            require(clipped <= 0.02) {
+                "RAW measurement is clipping ${"%.1f".format(clipped * 100)}% of sampled pixels; re-measure the white reference"
+            }
+
             val rgb = Rgb(
                 median(values.map { it.rgb.r }),
                 median(values.map { it.rgb.g }),
                 median(values.map { it.rgb.b }),
             )
-            lastMeasurementSummary = "$cameraSummary • $exposureSummary • ${values.size} RAW frames • clipping ${"%.2f".format(clipped * 100)}%"
+            val gradient = median(values.map { it.luminanceGradient })
+            val chromaSpread = median(values.map { it.chromaSpread })
+            val signal = rgb.max()
+
+            // Do not judge uniformity on a near-black patch; sensor noise dominates the ratios there.
+            if (signal > 0.035) {
+                require(gradient <= 0.55) {
+                    "The center measurement spot has too much brightness gradient (${"%.0f".format(gradient * 100)}%). Aim the small guide at a flatter-lit wall area and retry. The rest of the preview does not need to be uniform."
+                }
+                require(chromaSpread <= 0.12) {
+                    "The center measurement spot has a color gradient (${"%.0f".format(chromaSpread * 100)}% chroma spread). Move the small guide away from LED hot spots/shadows and retry."
+                }
+            }
+
+            val uniformity = (100.0 * (1.0 - gradient.coerceIn(0.0, 1.0)))
+            lastMeasurementSummary = "$cameraSummary • $exposureSummary • ${values.size} RAW frames • clipping ${"%.2f".format(clipped * 100)}% • spot uniformity ${"%.0f".format(uniformity)}%"
             return rgb
         }
     }
@@ -350,11 +430,11 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
         val s = session ?: error("Camera session is not ready")
         val target = rawReader?.surface ?: error("RAW surface unavailable")
         val e = manualExposure ?: error("Manual exposure is not locked")
-        val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+        val request = newRequestBuilder(camera, CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
             addTarget(target)
-            set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-            set(CaptureRequest.SENSOR_EXPOSURE_TIME, e.timeNs)
-            set(CaptureRequest.SENSOR_SENSITIVITY, e.iso)
+            setForSelectedStream(this, CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+            setForSelectedStream(this, CaptureRequest.SENSOR_EXPOSURE_TIME, e.timeNs)
+            setForSelectedStream(this, CaptureRequest.SENSOR_SENSITIVITY, e.iso)
             set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             applyOneX(this)
         }.build()
@@ -390,13 +470,14 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
         }
         require(values.size >= 3) { "Not enough camera frames" }
         fun median(xs: List<Double>) = xs.sorted()[xs.size / 2]
-        lastMeasurementSummary = "$cameraSummary • $exposureSummary • ${values.size} YUV frames"
+        lastMeasurementSummary = "$cameraSummary • $exposureSummary • ${values.size} YUV frames • small center spot"
         return Rgb(median(values.map { it.r }), median(values.map { it.g }), median(values.map { it.b }))
     }
 
     private fun sampleYuvCenter(image: Image): Rgb {
         val w = image.width; val h = image.height
-        val left = w * 2 / 5; val right = w * 3 / 5; val top = h * 2 / 5; val bottom = h * 3 / 5
+        val left = w * 44 / 100; val right = w * 56 / 100
+        val top = h * 44 / 100; val bottom = h * 56 / 100
         val yp = image.planes[0]; val up = image.planes[1]; val vp = image.planes[2]
         var rs = 0.0; var gs = 0.0; var bs = 0.0; var count = 0
         var y = top
@@ -412,19 +493,32 @@ class CameraSampler(private val activity: Activity, private val preview: Texture
                 rs += (yy + 1.402 * vv).coerceIn(0.0, 255.0)
                 gs += (yy - 0.344136 * uu - 0.714136 * vv).coerceIn(0.0, 255.0)
                 bs += (yy + 1.772 * uu).coerceIn(0.0, 255.0)
-                count++; x += 12
+                count++; x += 8
             }
-            y += 12
+            y += 8
         }
+        require(count > 0) { "No pixels in measurement spot" }
         return Rgb(rs / count / 255.0, gs / count / 255.0, bs / count / 255.0)
     }
 
     @Synchronized
     private fun releaseCameraResources() {
-        runCatching { session?.stopRepeating() }; runCatching { session?.close() }; runCatching { device?.close() }
-        runCatching { yuvReader?.close() }; runCatching { rawReader?.close() }; runCatching { previewSurface?.release() }
-        session = null; device = null; yuvReader = null; rawReader = null; previewSurface = null; requestBuilder = null
-        latestYuv = null; latestAutoExposure = null; manualExposure = null; rawQueue.clear()
+        runCatching { session?.stopRepeating() }
+        runCatching { session?.close() }
+        runCatching { device?.close() }
+        runCatching { yuvReader?.close() }
+        runCatching { rawReader?.close() }
+        runCatching { previewSurface?.release() }
+        session = null
+        device = null
+        yuvReader = null
+        rawReader = null
+        previewSurface = null
+        requestBuilder = null
+        latestYuv = null
+        latestAutoExposure = null
+        manualExposure = null
+        rawQueue.clear()
     }
 
     private fun postError(message: String) { activity.runOnUiThread { errorCallback?.invoke(message) } }
