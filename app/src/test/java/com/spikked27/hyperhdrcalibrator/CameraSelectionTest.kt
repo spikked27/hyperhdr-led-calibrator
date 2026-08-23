@@ -2,30 +2,55 @@ package com.spikked27.hyperhdrcalibrator
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class CameraSelectionTest {
+    private fun camera(
+        id: String,
+        eq: Double?,
+        raw: Boolean = true,
+        manual: Boolean = true,
+        physical: String? = null,
+        logicalFallback: Boolean = false,
+        area: Double = 40.0,
+    ) = CameraChoice(
+        openId = id,
+        physicalId = physical,
+        streamId = physical ?: id,
+        backFacing = true,
+        rawSupported = raw,
+        manualSensorSupported = manual,
+        equivalentFocalLengthMm = eq,
+        sensorAreaMm2 = area,
+        isLogicalFallback = logicalFallback,
+    )
+
     @Test fun choosesMainOverUltraWideAndTele() {
-        val ultra = CameraCandidate("2", true, true, listOf(13.0), true)
-        val main = CameraCandidate("0", true, true, listOf(24.0), true)
-        val tele = CameraCandidate("3", true, true, listOf(70.0), true)
-        assertEquals("0", CameraSelection.chooseMain(listOf(ultra, tele, main)).id)
+        val ultra = camera("2", 13.0)
+        val main = camera("0", 24.0)
+        val tele = camera("3", 70.0)
+        assertEquals("0", CameraSelection.chooseMain(listOf(ultra, tele, main)).openId)
     }
 
-    @Test fun rawMainBeatsNearMainProcessedCamera() {
-        val processed = CameraCandidate("1", true, false, listOf(23.0), true)
-        val raw = CameraCandidate("0", true, true, listOf(24.5), true)
-        assertEquals("0", CameraSelection.chooseMain(listOf(processed, raw)).id)
+    @Test fun physicalMainBeatsLogicalMultiCameraFallback() {
+        val logical = camera("0", 24.0, logicalFallback = true)
+        val physicalMain = camera("0", 24.5, physical = "3", logicalFallback = false)
+        assertEquals("3", CameraSelection.chooseMain(listOf(logical, physicalMain)).streamId)
     }
 
-    @Test fun frontCameraIsNeverPreferred() {
-        val front = CameraCandidate("front", false, true, listOf(24.0), true)
-        val rear = CameraCandidate("rear", true, true, listOf(27.0), true)
-        assertEquals("rear", CameraSelection.chooseMain(listOf(front, rear)).id)
+    @Test fun ultrawideDoesNotWinJustBecauseItSupportsRaw() {
+        val ultraRaw = camera("uw", 13.0, raw = true)
+        val mainProcessed = camera("main", 25.0, raw = false)
+        assertEquals("main", CameraSelection.chooseMain(listOf(ultraRaw, mainProcessed)).openId)
     }
 
-    @Test fun logicalCameraWithOneXAndMainFocalLengthWins() {
-        val logical = CameraCandidate("0", true, true, listOf(13.0, 24.0, 70.0), true)
-        val ultra = CameraCandidate("2", true, true, listOf(13.0), true)
-        assertEquals("0", CameraSelection.chooseMain(listOf(ultra, logical)).id)
+    @Test fun userOrderIsWideToTele() {
+        val sorted = CameraSelection.sortForUser(listOf(camera("tele", 70.0), camera("main", 24.0), camera("ultra", 13.0)))
+        assertEquals(listOf("ultra", "main", "tele"), sorted.map { it.openId })
+    }
+
+    @Test fun displayLabelsUltrawideClearly() {
+        assertTrue(camera("2", 13.0).displayName().contains("Ultrawide"))
+        assertTrue(camera("0", 24.0).displayName().contains("Main / wide"))
     }
 }
