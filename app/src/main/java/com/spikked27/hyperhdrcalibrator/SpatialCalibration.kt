@@ -53,6 +53,12 @@ data class WallColorResult(
 )
 
 object SpatialCalibration {
+    // Compatibility state for the current UI loop: it always asks for WHITE first and passes the same
+    // BLACK frame object for the rest of that run. The first call builds a white-reference model; all
+    // following colors reuse the exact same wall tiles and per-tile white references.
+    private var cachedBlackFrame: SpatialFrame? = null
+    private var cachedWallModel: WallReferenceModel? = null
+
     fun medianCombine(frames: List<SpatialFrame>): SpatialFrame {
         require(frames.isNotEmpty())
         val columns = frames.first().columns
@@ -176,8 +182,6 @@ object SpatialCalibration {
         val brightEnough = candidates.filter { (_, signal) -> luminance(signal) >= p90 * 0.08 }
         require(brightEnough.size >= 10) { "The reflected LED white signal is too weak across the visible wall." }
 
-        // Remove obvious colored objects/shadows using WHITE only, then lock this exact spatial mask for
-        // every LED color. Keeping one mask is important: all colors must see the same geometry.
         val whiteChromas = brightEnough.map { (_, signal) -> chromaticity(signal) }
         val center = robustRgb(whiteChromas)
         val distances = whiteChromas.map { chromaDistance(it, center) }
@@ -216,9 +220,6 @@ object SpatialCalibration {
         }
         require(ratios.size >= 8) { "Too few wall tiles had enough signal for this LED color." }
 
-        // Channel-wise division by the WHITE measurement at the same tile cancels the wall's brightness
-        // falloff, lens shading, much of the wall reflectance, and the different TV-vs-wall exposure.
-        // We then reject only chromatic outliers; brightness gradient itself is not an error condition.
         val center = robustRgb(ratios)
         val centerChroma = chromaticity(center)
         val distances = ratios.map { chromaDistance(chromaticity(it), centerChroma) }
@@ -236,6 +237,20 @@ object SpatialCalibration {
             brightnessGradient = model.brightnessGradient,
             chromaSpread = spread,
         )
+    }
+
+    /**
+     * Current UI compatibility overload. The UI iterates WHITE, RED, GREEN, BLUE, CYAN, MAGENTA,
+     * YELLOW using the same BLACK object. A new BLACK object means a new calibration run, so the first
+     * call safely establishes the WHITE spatial reference and later calls reuse it.
+     */
+    @Synchronized
+    fun wallColor(frame: SpatialFrame, black: SpatialFrame, tvRect: NormalizedRect): WallColorResult {
+        if (cachedBlackFrame !== black || cachedWallModel == null) {
+            cachedBlackFrame = black
+            cachedWallModel = buildWallReference(frame, black, tvRect)
+        }
+        return wallColor(frame, black, requireNotNull(cachedWallModel))
     }
 
     private fun requireSameGrid(a: SpatialFrame, b: SpatialFrame) {
