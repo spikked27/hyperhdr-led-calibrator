@@ -7,294 +7,240 @@ This is the durable continuation record for the Android calibration app and its 
 ## Project identity
 
 - Repository: `spikked27/hyperhdr-led-calibrator`
-- Prior ChatGPT thread title: **Splitter Firmware and Android Calibration app**
+- Prior ChatGPT thread: **Splitter Firmware and Android Calibration app**
 - Shared-chat URL: `https://chatgpt.com/share/6a8b82e3-cdcc-83ea-8b02-cf37e5bf6985?ogimg=plain`
 - Archived visible transcript: `docs/chat-history/Splitter-Firmware-and-Android-Calibration-App-2026-08-23.md`
 - Recovery skill: `skills/project-continuation/SKILL.md`
 
-The archived transcript was extracted from the user-supplied MHT saved from the shared ChatGPT page. It preserves every user-visible turn present in that saved page. Collapsed tool/reasoning panels are represented only by their visible summary labels because their hidden contents were not embedded in the MHT DOM.
+The transcript was extracted from the MHT supplied by the user. It preserves all user-visible turns present in that saved page. Collapsed tool/reasoning panels are preserved only by their visible summary labels because hidden panel contents were not embedded in the saved DOM.
 
 ## Current source of truth
 
-**Latest implemented version: `0.1.0-beta.8`**
+**Latest implemented app version: `0.1.0-beta.8`.**
 
-- Beta 8 PR: **#8 — Beta 8: synchronized automatic video calibration**
+- Beta 8 PR: #8 — `Beta 8: synchronized automatic video calibration`
 - PR head: `74aabfbf73848ee336023bccf18bb4dae5a48880`
 - Main Beta 8 commit: `4bf6f083cfe0e73408a8b1c51851679adba9e53a`
-- Beta 8 Android CI run: `32656393303` / run #27 — **success**
-- CI artifact: `hyperhdr-led-calibrator-beta`
+- Android CI run: `32656393303` / run #27 — **success**
+- APK artifact: `hyperhdr-led-calibrator-beta`
 - Artifact ID: `9497566184`
 - Artifact size: 9,211,677 bytes
 - Artifact digest: `sha256:9fa33e55a84eafacab1f3b16d1da25b0c017fb0996d6dfd34dc183823ba5a7f8`
 - Artifact created: 2026-08-23 17:57:33 UTC
 - Artifact expires: 2026-11-21 17:55:31 UTC
 
-The CI workflow for this build runs JVM unit tests, Android lint, `assembleDebug`, and uploads `app-debug.apk`; the Beta 8 PR-head run completed successfully.
+The Beta 8 CI workflow runs JVM unit tests, Android lint, `assembleDebug`, and APK upload. The PR-head run completed successfully. No app-code changes have been made after Beta 8 during this recovery session; only project documentation/continuation files were added.
 
-No code changes have been made after Beta 8 in this recovery session; only documentation/continuation files were added.
+## Product goal
 
-## Original product goal
+Use an Android phone camera as a relative color comparator to calibrate HyperHDR RGBW bias-light output to the TV screen. The phone is not treated as a laboratory colorimeter. Accuracy comes from measuring TV and reflected LED light with the same camera, locked controls, RAW when available, black subtraction, white referencing, robust spatial sampling, and relative color math.
 
-Use an Android phone camera as a relative color comparator to match HyperHDR RGBW bias-light output to the TV screen. The phone is not treated as a laboratory colorimeter. Accuracy comes from measuring TV and reflected LED light with the same sensor/pipeline, using locked camera controls, RAW where available, ambient/black subtraction, and relative/white-referenced color math.
-
-The app should discover/select the correct HyperHDR instance, measure TV references, automatically drive the LED colors, solve the full ICE calibration anchors, show diagnostics/error improvement, and leave persistent HyperHDR settings untouched unless explicitly approved.
+Persistent HyperHDR ICE settings are not automatically overwritten in the current beta; the app calculates and reports recommended full ICE anchors.
 
 ## Recovered beta chronology
 
 ### Initial beta / Beta 1
 
-Initial working Android beta established:
+Established the first Android implementation: HyperHDR SSDP discovery, JSON control, TV/LED measurement, calibration solver, CI/tests, and debug APK artifact. PR #2 explicitly records field feedback from Beta 1.
 
-- HyperHDR SSDP discovery.
-- JSON-server connection and temporary color control.
-- TV and LED measurement workflow.
-- calibration solver and ICE anchor suggestions.
-- Android CI, tests, APK artifact, and validation checklist.
-
-The exact Beta 1 version-label commit is not separately named in Git, but PR #2 explicitly records field feedback from Beta 1.
-
-### Beta 2 — guided Material 3 calibration flow
+### Beta 2 — guided Material 3 flow
 
 PR #2 / commit `2ce3a2cb156840c35216980d39741c09a2ba06c6`.
 
-- Show discovered HyperHDR servers/instances before opening camera.
-- Explicitly connect and lock session to selected HyperHDR instance.
-- Guided TV reference-color capture.
-- Dedicated TV→LED transition.
-- Automatically set/confirm each LED test color.
-- Fix HyperHDR color-command `origin` length/schema issue.
-- Surface HyperHDR API errors.
-- Material 3 UI with dynamic color.
-- Safe system-bar/drawing insets.
-- Protocol and instance-selection tests.
+- Select discovered HyperHDR server/instance before camera opens.
+- Lock calibration to the selected instance.
+- Guided TV-reference capture and TV→LED transition.
+- Automatic LED test-color setting/confirmation.
+- Fixed HyperHDR color-command schema/origin issue.
+- Surfaced API errors.
+- Material 3/dynamic-color UI and safe system-bar insets.
+- Added protocol/instance tests.
 
-### Beta 3 — camera lifecycle and TV blackout
+### Beta 3 — camera lifecycle + TV blackout
 
 PR #3 / merge `5a9afd935c0c882b0ab5e08559dc350c9478a76d`.
 
-- Keep one stable preview through TV→LED transition.
-- Rebind/reopen Camera2 when TextureView/SurfaceTexture is recreated.
+- Stable preview through TV→LED transition.
+- Reopen/rebind Camera2 after TextureView/SurfaceTexture recreation.
 - Ignore stale camera callbacks.
-- Force HyperHDR to BLACK for the whole TV-reference phase so backlights cannot contaminate TV measurements.
-- Keep LEDs black through transition.
-- Retry/error handling for blackout failures.
-- Clean camera close on results.
-- Test verifies blackout is true RGB 0,0,0.
+- Force HyperHDR BLACK throughout TV-reference measurement so LEDs cannot contaminate the screen reference.
+- Retry/error handling for blackout and clean camera shutdown.
 
-### Beta 4 — robust HyperHDR control sessions
+### Beta 4 — robust HyperHDR commands
 
 PR #4 / merge `715b37e3cc3c3eb08468d16009e2b95b36da20be`.
 
-Field problem: calibration could become stuck at “waiting to turn the LEDs off” because a long-lived JSON/TCP connection had gone stale.
+Field problem was getting stuck at “waiting to turn the LEDs off” due to stale JSON/TCP sessions.
 
-- Each color/blackout/clear command opens a fresh socket.
-- Select the locked HyperHDR instance, send command, close socket.
+- Fresh socket for each color/blackout/clear command.
+- Re-select locked instance for each command.
 - Retry one transient network failure.
-- Shorter connect/read timeouts.
-- Keep selected instance locked for the session.
+- Shorter network timeouts.
 
-### Beta 5 — automatic final LED-black completion
+### Beta 5 — automatic final LED BLACK
 
-PR #5 / merge `7a96e436d509c8df55d298970919cd8a1e4d5d586` is **not** the Beta 5 merge; correct Beta 5 merge is `7a96e436d509c8df55d298970919cd8a1e4d5d586` only if verified. Repository history identifies the Beta 5 PR merge as `7a96e436d509c8df55d298970919cd8a1e4d5d586`; if this SHA conflicts with GitHub metadata, re-read PR #5 before relying on it.
+PR #5 / merge `7a96e436d509c8df55d298970919cd8a1e4d5d586`.
 
-Known Beta 5 behavior:
-
-- After final visible LED color, automatically switch HyperHDR to BLACK.
-- Capture wall-black baseline automatically.
+- Automatically switch LEDs to BLACK after the last visible LED color.
+- Automatically capture wall-black baseline.
 - Dedicated analyzing screen.
-- Manual retry path if automatic black capture fails.
+- Manual retry if automatic black capture fails.
 - Live status/error messages.
-- Solver rejection restores HyperHDR control and shows captured TV/LED values plus exact error.
-- Flow test verifies automatic BLACK transition.
-
-> Recovery note: PR #5 should be re-queried before using its merge SHA in release automation; behavior above is verified from the PR body/history.
+- Solver failure restores HyperHDR control and shows the exact captured values/error.
 
 ### Beta 6 — main 1× camera + RAW manual measurements
 
 PR #6 / merge `a882ee9861dd7a3e5b6acb124db5200bc85ea6a3`.
 
-- Deterministically choose rear camera closest to ~24 mm-equivalent rather than first camera ID.
-- Force 1.0× zoom where Camera2 allows it.
+- Deterministically prefer the normal rear camera near ~24 mm equivalent.
+- Force 1.0× zoom where Camera2 supports it.
 - Prefer RAW-capable main camera.
-- Use `RAW_SENSOR` Bayer data when RAW + manual sensor controls are available.
-- Subtract sensor black level and normalize to sensor white level.
-- Median-combine 5–7 RAW frames per measurement.
-- After each white reference, lock exact `SENSOR_EXPOSURE_TIME` and `SENSOR_SENSITIVITY` for that calibration half.
+- Use `RAW_SENSOR` Bayer measurements with black-level subtraction and white-level normalization when possible.
+- Median-combine 5–7 RAW frames.
+- Lock exact shutter/ISO after a white reference for each calibration half.
 - Separate TV and LED-wall exposure locks.
-- Automatically reduce white-reference exposure if RAW clipping exceeds 1%; reject if clipping remains excessive.
-- YUV fallback for devices without usable RAW/manual support.
-- Tests cover main-camera selection, Bayer arrangements, clipping, and exact patch order.
-- Patch order locked to: **White → Red → Green → Blue → Cyan → Magenta → Yellow → Black**.
+- Reduce exposure if RAW clipping exceeds 1%; reject persistently clipped data.
+- YUV fallback on devices without usable RAW/manual support.
+- Lock patch order to **WHITE → RED → GREEN → BLUE → CYAN → MAGENTA → YELLOW → BLACK**.
 
 ### Beta 7 — fixed-camera spatial calibration
 
-PR #7 / head `167e14056a40c3459d3078bacfd60ed33155d0f6`.
+PR #7 / final head `167e14056a40c3459d3078bacfd60ed33155d0f6`.
 
-Major accuracy change:
+- Keep the phone aimed at the TV + wall for the entire run.
+- Detect TV rectangle from the initial WHITE reference while HyperHDR LEDs are off.
+- LED phase leaves TV BLACK and measures the surrounding wall halo.
+- Sample full RAW frame into a spatial grid; median-combine 5 frames per measurement.
+- Build one wall reference from LED WHITE and use the same retained wall tiles for every color.
+- Subtract BLACK per tile and channel-wise divide by WHITE per tile to cancel much of the brightness gradient, lens shading, wall reflectance variation, and TV/LED exposure difference.
+- Reject colored/shadowed wall outliers without rejecting normal brightness gradients.
+- White-reference TV and LED math while preserving relative primary strength.
+- Preserve WHITE `[255,255,255]` so threshold 1.0 keeps using the dedicated W diode.
+- Enumerate physical rear camera sensors and provide **Switch rear camera** before capture.
 
-- Keep phone aimed at TV+wall for the entire run; no longer move phone between TV and wall.
-- Detect TV rectangle from initial WHITE reference with HyperHDR backlights off.
-- LED phase keeps TV BLACK and samples the wall halo around the detected TV.
-- Capture the full RAW frame into a spatial grid rather than one center patch.
-- Capture 5 RAW frames per measurement and median-combine.
-- Build one fixed wall mask/model from LED WHITE and use the same reference tiles for all LED colors.
-- Subtract BLACK per tile, then channel-wise white-reference each tile.
-- This cancels much of wall brightness falloff, lens shading, wall reflectance variation, and TV/LED exposure difference without requiring a uniform wall image.
-- Reject colored/shadowed wall outliers while retaining ordinary brightness gradients.
-- Solve in white-referenced TV and LED space while preserving relative R/G/B primary strength.
-- Preserve WHITE `[255,255,255]` so threshold 1.0 continues to use the dedicated W diode rather than silently mixing RGB into neutral white.
-- Enumerate physical rear camera sensors and attempt to pin the chosen physical Camera2 stream.
-- Manual **Switch rear camera** option before first capture.
-- Added synthetic tests for TV detection, strong gradients, outliers, physical-camera selection, and median suppression.
-
-Post-Beta-7 compatibility fixes before Beta 8:
+Compatibility fixes immediately before Beta 8:
 
 - `a8f036111979c0250d246c08291c8d5b90531eea` — physical Camera2 request-key compatibility.
-- `167e14056a40c3459d3078bacfd60ed33155d0f6` — physical camera result API guard.
+- `167e14056a40c3459d3078bacfd60ed33155d0f6` — physical-camera result API guard.
 
 ### Beta 8 — synchronized automatic video calibration
 
 PR #8 / main commit `4bf6f083cfe0e73408a8b1c51851679adba9e53a`.
 
-This implements the user’s final visible request from the archived chat:
+Beta 8 implements the last visible user request in the archived thread: fix the distorted preview, make the guide fit the actual TV, automatically capture when the video changes colors, automatically begin LED capture on the final black screen, tolerate normal handheld motion, and make the app/video operate as one coordinated workflow with a **START VIDEO NOW** action.
 
-- Fix heavily stretched/distorted camera preview.
-- Make the on-preview box fit the actual TV.
-- Automatically capture the TV when the calibration video switches colors.
-- Automatically transition to LED capture when the video reaches BLACK.
-- Tolerate ordinary handheld movement.
-- Rebuild/match the video to the app, including a long final BLACK.
-- UI explicitly tells user **START VIDEO NOW** to begin the automatic sequence.
+Implemented behavior:
 
-Beta 8 implementation:
+- `AutoCalibrationActivity` becomes the launcher; the former manual activity remains internal.
+- Preview UI is 16:9 and Camera2 preview buffer is 1280×720, replacing the stretched arbitrary preview box.
+- Fixed fake TV guide removed; a white outline is drawn from the detected/tracked TV rectangle.
+- **START VIDEO NOW** first forces HyperHDR backlights BLACK and arms detection.
+- App recognizes the actual TV image rather than trusting elapsed time.
+- Automatic TV sequence: **WHITE → RED → GREEN → BLUE → CYAN → MAGENTA → YELLOW → BLACK**.
+- Each accepted TV patch is measured with 5-frame spatial capture.
+- Initial WHITE establishes TV rectangle and camera reference.
+- Later colored frames reacquire the TV around the previous rectangle; BLACK retains the last rectangle.
+- Final TV BLACK automatically starts the LED phase with no additional button press.
+- LED WHITE establishes the wall exposure/reference.
+- LED BLACK is captured before and after the color sequence; the two black fields are median-combined.
+- RED/GREEN/BLUE/CYAN/MAGENTA/YELLOW LED fields are controlled and captured automatically while the TV stays BLACK.
+- Wall fields are spatially translation-aligned to the WHITE reference before channel-wise normalization.
+- Alignment searches **±3 tiles** in X/Y for modest handheld drift.
+- Solver reports full HyperHDR ICE anchors, estimated relative before/after error, and per-color spatial diagnostics.
+- Temporary HyperHDR calibration priority is cleared on success and cleanup/error paths.
 
-- `AutoCalibrationActivity` becomes launcher; old `MainActivity` remains internal.
-- Camera preview UI is fixed to 16:9, matching a 1280×720 Camera2 preview buffer instead of stretching the image into an arbitrary box.
-- Fixed fake TV guide removed.
-- White outline is generated from the detected TV rectangle and follows tracked movement.
-- Pressing **START VIDEO NOW** first forces HyperHDR backlights BLACK, then arms video detection.
-- App watches actual preview colors rather than relying on elapsed video time.
-- TV sequence is recognized automatically: **WHITE → RED → GREEN → BLUE → CYAN → MAGENTA → YELLOW → BLACK**.
-- Each detected TV patch is automatically measured using 5-frame spatial camera sampling.
-- First WHITE establishes the TV rectangle and camera reference.
-- Later colored RAW frames reacquire/track the TV around the previous rectangle; if reacquisition fails, the prior rectangle is retained rather than aborting immediately.
-- BLACK keeps the last TV rectangle because there is no bright screen field to segment.
-- On final TV BLACK, the app starts the complete LED measurement phase automatically.
-- LED WHITE establishes a separately locked wall exposure.
-- LED BLACK is captured both before and after the color sequence; those two frames are median-combined into the ambient/black baseline.
-- LED RED/GREEN/BLUE/CYAN/MAGENTA/YELLOW are controlled and captured automatically while the TV remains BLACK.
-- Wall-light fields are spatially aligned to the WHITE reference before channel-wise white normalization.
-- Alignment searches translations of **±3 spatial tiles** so small handheld shifts do not corrupt gradient cancellation.
-- Solver produces full ICE anchor values and estimated relative before/after validation error.
-- Results include per-patch spatial diagnostics: tiles used, gradient ratio, alignment dx/dy, and chroma spread.
-- HyperHDR temporary priority is cleared on success, cancellation/error, rerun, disconnect, and app destruction paths.
+## Beta 8 app/video protocol
 
-## Beta 8 synchronized video protocol
+`CalibrationProtocol.kt` defines:
 
-Defined in `CalibrationProtocol.kt`:
-
-- Initial BLACK lead-in: **6 seconds**.
-- Each normal TV patch: **10 seconds**.
-- Final BLACK: **120 seconds**.
+- Initial BLACK lead-in: **6 s**.
+- Each non-final TV patch: **10 s**.
+- Final BLACK: **120 s**.
 - Sequence: WHITE, RED, GREEN, BLUE, CYAN, MAGENTA, YELLOW, BLACK.
-- Preview analysis size: **72 × 40**.
-- Preview analysis cadence: **120 ms**.
-- Required stable preview matches before capture: **4 frames**.
-- LED settle time: **700 ms**.
+- Preview analysis: **72×40** pixels.
+- Preview analysis interval: **120 ms**.
+- Stable matches required before capture: **4 frames**.
+- LED settle: **700 ms**.
 - LED WHITE exposure settle: **1200 ms**.
 
-The app/video contract deliberately does **not** require exact wall-clock synchronization after starting. The video provides long stable patches; the app recognizes the actual patch currently visible on the TV and waits for four stable preview matches before taking the high-quality measurement. This makes it tolerant of user start timing and small playback hiccups.
+The app does not depend on exact video timing after start. Long stable video patches provide the state; the app recognizes the current patch and waits for four stable preview detections before the high-quality measurement. This is intentionally tolerant of small playback/start delays.
 
-If the companion video contains no additional transition frames, these constants imply a nominal duration of **3:16** (6 s lead-in + seven 10 s non-black patches + 120 s final black). The exact delivered video file itself has not yet been recovered/verified, so do not treat 3:16 as a verified file duration until the MP4 is located.
+If no additional transition frames exist, these constants imply a nominal video duration of **3:16** (6 s + seven 10 s non-black patches + 120 s final black). The actual delivered MP4 has not yet been recovered, so this is a protocol-derived duration, not a verified file duration.
 
-## Beta 8 preview detection/tracking details
+## Beta 8 preview tracking
 
-`PreviewAnalyzer` is used only for synchronization and the visible TV outline. Calibration values still come from Camera2 RAW_SENSOR when available.
+`PreviewAnalyzer` is for sync and the on-screen TV outline; calibration values still use RAW_SENSOR when supported.
 
-Initial WHITE detection:
+- Initial WHITE detection compares a bright, neutral center component with the preview border/background.
+- Requires foreground ≥0.22 and ≥0.08 above background.
+- Segmentation threshold is 48% between background and foreground.
+- White-balance score threshold: 0.55.
+- TV sample is inset 18% inside the detected rectangle.
+- Handheld tracking searches the previous TV rectangle expanded ~45% horizontally and ~55% vertically.
+- Expected-color segmentation distance threshold: 0.43.
+- Tracked area ratio allowed: ~0.42–1.85 of previous.
+- Relative aspect-ratio factor allowed: ~0.62–1.62.
+- BLACK uses the previous rectangle.
+- BLACK match threshold: ≤10.5% of WHITE-reference luma.
+- Expected-patch match limit: 0.27 for WHITE, 0.39 for colors.
 
-- Estimate dark/background luma from preview borders.
-- Estimate foreground from center-region 90th percentile.
-- Require foreground ≥ 0.22 and at least 0.08 above background.
-- Segment at 48% of foreground-background contrast.
-- Require white-balance score ≥ 0.55.
-- Sanity-check detected TV area/width/height.
-- Measurement sampling uses an 18% inset from the detected preview rectangle.
+RAW/spatial capture has a separate TV-reacquisition pass with its own geometry/chroma sanity checks.
 
-Handheld preview tracking:
-
-- Search around the previous TV rectangle expanded by ~45% horizontally and ~55% vertically.
-- Segment based on expected patch chromaticity and relative luma.
-- Expected-patch segmentation distance threshold: 0.43.
-- Tracked area may vary roughly 0.42×–1.85× previous area.
-- Relative aspect-ratio factor accepted roughly 0.62–1.62.
-- BLACK reuses previous rectangle.
-- Expected BLACK threshold is ≤10.5% of WHITE-reference luma.
-- Preview match threshold is tighter for WHITE (0.27) than other colors (0.39).
-
-RAW/spatial TV tracking uses its own sanity checks and reacquires the uniformly colored screen within an expanded window around the prior rectangle.
-
-## Beta 8 wall spatial alignment/gradient cancellation
+## Beta 8 spatial wall alignment
 
 - Wall reference is an annulus around the detected TV.
-- Reference is built from LED WHITE minus LED BLACK on a per-tile basis.
-- Too-dark tiles and chromatic outliers are rejected.
+- LED WHITE minus LED BLACK establishes the per-tile reference.
+- Low-signal and chromatic-outlier tiles are removed.
 - The same retained WHITE-reference model is reused for every LED color.
-- Brightness-gradient diagnostics are based on retained wall-tile P90/P10.
-- Before color normalization, the current wall field is translated against the WHITE field by up to ±3 tiles in X/Y.
-- Shift score is based on log-luminance shape after removing global brightness scale, allowing red/green/blue fields to align with white despite different sensor response.
-- Each color is black-subtracted, divided channel-by-channel by the aligned WHITE reference, robustly combined, and chromatic outliers rejected.
-
-This is the core mechanism that allows modest phone movement while retaining Beta 7’s gradient/lens-shading cancellation.
+- Current wall-light field is translated against WHITE by up to ±3 grid tiles.
+- Shift scoring compares log-luminance field shape after removing global brightness scale.
+- Each color is black-subtracted, divided channel-by-channel by aligned WHITE, robustly combined, and filtered for chromatic outliers.
+- Results report tiles used, P90/P10 brightness-gradient ratio, alignment dx/dy, and chroma spread.
 
 ## Camera/exposure behavior retained in Beta 8
 
-- Physical rear-camera enumeration/selection from Beta 7.
-- Prefer the normal/main ~1× camera and RAW-capable sensor.
-- 1280×720 preview buffer.
-- RAW_SENSOR measurements when available; YUV fallback otherwise.
-- Sensor black-level subtraction and white-level normalization in RAW path.
-- First TV WHITE: exposure and AWB are allowed to settle, then exposure/WB are locked for TV references.
-- LED WHITE starts a second exposure-settle/lock phase for LED-wall measurements, while white balance remains locked.
-- Manual-sensor path uses explicit shutter and ISO after sampling auto-exposure metadata; non-manual devices fall back to AE lock.
-- Camera request/result handling includes OEM/API guards for physical sensors.
+- Physical rear-camera selection from Beta 7.
+- Prefer normal/main ~1× camera and RAW-capable sensor.
+- RAW_SENSOR where possible; YUV fallback otherwise.
+- RAW black-level subtraction and white-level normalization.
+- First TV WHITE allows AE/AWB to settle, then locks exposure and white balance for TV references.
+- LED WHITE establishes a second exposure state for wall measurements while WB remains locked.
+- Manual-sensor path locks explicit shutter and ISO; non-manual path uses AE lock.
+- Physical-camera request/result API calls are guarded for OEM/API compatibility.
 
 ## Validation status
 
 ### Automated
 
-Beta 8 PR-head Android CI **passed**.
-
-The CI gate runs:
+Beta 8 PR-head Android CI **passed**. The workflow runs:
 
 1. JVM unit tests.
 2. Android lint.
 3. Debug APK build.
 4. APK artifact upload.
 
-Beta 8 adds tests for synchronized protocol, preview TV detection/tracking, RAW TV tracking, strong wall gradients, and shifted wall fields in addition to prior solver/protocol/camera tests.
+Beta 8 includes tests for synchronized protocol, preview TV detection/tracking, RAW TV tracking, strong wall gradients, and shifted wall fields in addition to the earlier solver/protocol/camera tests.
 
 ### Real device
 
-The archived chat contains the user’s real-device feedback immediately before Beta 8: the previous build “worked really well,” camera selection worked great, but the preview was distorted and the user requested the fully automatic synchronized workflow. Those requests became Beta 8.
+The archived MHT contains the user’s feedback on the build immediately before Beta 8: it “worked really well,” camera selection “worked great,” but the preview was heavily distorted and the desired workflow was fully automatic/synchronized. Those requests became Beta 8.
 
-The supplied MHT snapshot ends during Beta 8 implementation/status messages and does **not** contain the later user-visible Beta 8 delivery or any subsequent real-device test result. Therefore Beta 8’s automated build/tests are verified, but post-delivery phone/TV behavior is not yet recovered from the transcript.
+The supplied MHT snapshot ends while Beta 8 is being implemented and does not contain the later visible Beta 8 delivery or post-installation feedback. Therefore Beta 8’s source and automated CI/build status are verified, but its real-device behavior after delivery has not yet been recovered.
 
-## Known remaining recovery gaps
+## Remaining recovery gaps
 
-- Exact filename/location of the companion Beta 8 calibration video delivered in ChatGPT.
-- Verification that the delivered MP4 exactly matches the 6 s / 10 s / 120 s protocol constants.
-- Exact filename used for the Beta 8 APK in the prior ChatGPT delivery; the GitHub CI APK artifact itself is recoverable as artifact ID `9497566184`.
-- Any real-device feedback the user gave after installing Beta 8.
-- The exact next request after the Beta 8 delivery, if any.
+- Exact companion Beta 8 MP4 filename/location from the prior ChatGPT delivery.
+- Verify the delivered MP4 itself matches the 6 s / 10 s / 120 s protocol.
+- Exact prior ChatGPT APK filename; the GitHub CI build is recoverable as artifact ID `9497566184`.
+- Any user feedback after installing Beta 8.
+- Exact next request after the Beta 8 delivery, if there was one.
 
-## Important continuation rules
+## Continuation rules
 
-- **Do not restart from the old README/Beta 0.1 workflow. Beta 8 is the current implemented codebase.**
-- Treat `4bf6f083cfe0e73408a8b1c51851679adba9e53a` as the Beta 8 implementation anchor.
-- Preserve automatic video recognition, dynamic TV tracking, RAW/spatial capture, wall-field alignment, fixed HyperHDR instance selection, and cleanup behavior unless explicitly replacing them.
+- **Do not restart from README/Beta 0.1. Beta 8 is the current implementation.**
+- Use commit `4bf6f083cfe0e73408a8b1c51851679adba9e53a` as the Beta 8 implementation anchor.
+- Preserve automatic patch recognition, 16:9 preview geometry, dynamic TV tracking, RAW/spatial capture, wall-field alignment, fixed HyperHDR-instance selection, and cleanup behavior unless intentionally replacing them.
 - Keep app and companion video protocol/version matched.
-- Before Beta 9, obtain a real-device Beta 8 run if possible; the highest-value validation target is whether the preview geometry and detected TV outline now match the physical TV on the user’s phone.
-- Also verify automatic patch recognition through the full video, final BLACK transition, and the wall-field alignment diagnostics under ordinary handheld movement.
-- Do not write persistent HyperHDR ICE settings automatically without explicit user approval.
-- Update this file after every beta or material real-device test.
+- Highest-value next validation is a complete real-device Beta 8 run: confirm preview geometry/TV outline, full automatic patch sequence, final-BLACK transition, and wall alignment during normal handheld movement.
+- Do not automatically write persistent HyperHDR ICE settings without explicit approval.
+- Update this file after every beta or material device test.
