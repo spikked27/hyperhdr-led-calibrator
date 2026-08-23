@@ -212,10 +212,9 @@ class CameraSampler(
         builder.set(key, value)
         val physicalId = selectedPhysicalId
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && physicalId != null) {
-            val allowed = selectedOpenChars?.get(CameraCharacteristics.REQUEST_AVAILABLE_PHYSICAL_CAMERA_REQUEST_KEYS)
-            if (allowed?.contains(key) == true) {
-                runCatching { builder.setPhysicalCameraKey(key, value, physicalId) }
-            }
+            // Physical-camera request keys vary by OEM. Camera2 rejects unsupported physical keys;
+            // keep the logical request as the fallback and apply the physical override when accepted.
+            runCatching { builder.setPhysicalCameraKey(key, value, physicalId) }
         }
     }
 
