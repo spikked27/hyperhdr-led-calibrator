@@ -1,0 +1,78 @@
+name: Apply Beta 9.1 preview fix
+
+on:
+  push:
+    branches: [beta9-reliable-tracking]
+    paths:
+      - '.github/workflows/apply-beta91-preview-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: beta9-reliable-tracking
+
+      - name: Patch portrait preview and overlay z-order
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('app/src/main/java/com/spikked27/hyperhdrcalibrator/Beta9CalibrationActivity.kt')
+          text = path.read_text()
+
+          replacements = [
+              (
+                  'import androidx.compose.ui.draw.clip\n',
+                  'import androidx.compose.ui.draw.clip\nimport androidx.compose.ui.zIndex\n',
+              ),
+              (
+                  ' * - calibration UI is landscape and Camera2 preview gets an explicit transform (no stretched preview),',
+                  ' * - calibration UI stays portrait with a true 9:16 camera viewport (no stretched preview),',
+              ),
+              (
+                  'Text("HyperHDR LED Calibrator • Beta 9", fontWeight = FontWeight.SemiBold)',
+                  'Text("HyperHDR LED Calibrator • Beta 9.1", fontWeight = FontWeight.SemiBold)',
+              ),
+              (
+                  'modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(18.dp)).background(Color.Black),',
+                  'modifier = Modifier.fillMaxWidth().aspectRatio(9f / 16f).clip(RoundedCornerShape(18.dp)).background(Color.Black),',
+              ),
+              (
+                  '            AndroidView(\n                modifier = Modifier.fillMaxSize(),',
+                  '            AndroidView(\n                modifier = Modifier.fillMaxSize().zIndex(0f),',
+              ),
+              (
+                  '                        .height(maxHeight * rect.height.toFloat())\n                        .border(3.dp, if (borderLocked) Color.Green else Color.White, RoundedCornerShape(4.dp)),',
+                  '                        .height(maxHeight * rect.height.toFloat())\n                        .zIndex(2f)\n                        .border(5.dp, if (borderLocked) Color.Green else Color.White, RoundedCornerShape(4.dp)),',
+              ),
+              (
+                  '                modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp),',
+                  '                modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp).zIndex(3f),',
+              ),
+          ]
+
+          for old, new in replacements:
+              if old in text:
+                  text = text.replace(old, new, 1)
+              elif new not in text:
+                  raise SystemExit(f'Expected source fragment not found:\n{old}')
+
+          path.write_text(text)
+
+      - name: Commit patched activity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/spikked27/hyperhdrcalibrator/Beta9CalibrationActivity.kt
+          if git diff --cached --quiet; then
+            echo "No changes required"
+            exit 0
+          fi
+          git commit -m "Beta 9.1: portrait preview and visible TV border"
+          git push origin HEAD:beta9-reliable-tracking
