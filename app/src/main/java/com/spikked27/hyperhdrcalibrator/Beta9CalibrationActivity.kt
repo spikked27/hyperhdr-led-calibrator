@@ -54,6 +54,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -70,7 +71,7 @@ import kotlin.math.abs
  * Beta 9 field-reliability pass.
  *
  * Major differences from Beta 8:
- * - calibration UI is landscape and Camera2 preview gets an explicit transform (no stretched preview),
+ * - calibration UI stays portrait with a true 9:16 camera viewport (no stretched preview),
  * - TV border is found before playback using BLACK TV + WHITE backlight and is constrained to 16:9,
  * - overlay follows/refines the physical border instead of a generic color component,
  * - companion video carries a machine-readable marker, so synchronization does not depend on the
@@ -220,7 +221,7 @@ class Beta9CalibrationActivity : ComponentActivity() {
                 CenterAlignedTopAppBar(
                     title = {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("HyperHDR LED Calibrator • Beta 9", fontWeight = FontWeight.SemiBold)
+                            Text("HyperHDR LED Calibrator • Beta 9.1", fontWeight = FontWeight.SemiBold)
                             selectedTarget?.let {
                                 if (stage != Stage.DISCOVERY) Text(it.displayName, style = MaterialTheme.typography.labelSmall)
                             }
@@ -347,10 +348,10 @@ class Beta9CalibrationActivity : ComponentActivity() {
     @Composable
     private fun CameraPreview() {
         BoxWithConstraints(
-            modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(18.dp)).background(Color.Black),
+            modifier = Modifier.fillMaxWidth().aspectRatio(9f / 16f).clip(RoundedCornerShape(18.dp)).background(Color.Black),
         ) {
             AndroidView(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().zIndex(0f),
                 factory = { context ->
                     TextureView(context).also { view ->
                         view.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ -> PreviewGeometry.configure(v as TextureView) }
@@ -370,7 +371,8 @@ class Beta9CalibrationActivity : ComponentActivity() {
                         .offset(x = maxWidth * rect.left.toFloat(), y = maxHeight * rect.top.toFloat())
                         .width(maxWidth * rect.width.toFloat())
                         .height(maxHeight * rect.height.toFloat())
-                        .border(3.dp, if (borderLocked) Color.Green else Color.White, RoundedCornerShape(4.dp)),
+                        .zIndex(2f)
+                        .border(5.dp, if (borderLocked) Color.Green else Color.White, RoundedCornerShape(4.dp)),
                 )
             }
             Text(
@@ -380,7 +382,7 @@ class Beta9CalibrationActivity : ComponentActivity() {
                     markerStep != null -> "Video marker ${markerStep!! + 1}/8 • border tracked"
                     else -> "Watching Beta 9 sync marker"
                 },
-                modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp).zIndex(3f),
                 color = Color.White,
                 style = MaterialTheme.typography.labelLarge,
             )
