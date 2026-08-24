@@ -77,7 +77,6 @@ object VideoSyncAnalyzer {
                         continue
                     }
 
-                    // Avoid the bezel/halo itself by looking slightly inside the candidate screen.
                     val insetX = max(2, (w * 0.06).toInt())
                     val insetY = max(2, (h * 0.07).toInt())
                     val screen = PixelRect(
@@ -142,10 +141,9 @@ object VideoSyncAnalyzer {
                 while (dx <= maxDx) {
                     val candidate = centeredRect(centerX + dx, centerY + dy, w, h, frame.width, frame.height)
                     val edge = edgeContrast(integral, candidate)
-                    val centerShift = sqrt(
-                        (dx.toDouble() / prior.width.coerceAtLeast(1)).let { it * it } +
-                            (dy.toDouble() / prior.height.coerceAtLeast(1)).let { it * it }
-                    )
+                    val nx = dx.toDouble() / prior.width.coerceAtLeast(1)
+                    val ny = dy.toDouble() / prior.height.coerceAtLeast(1)
+                    val centerShift = sqrt(nx * nx + ny * ny)
                     val scaleShift = abs(candidate.width - prior.width).toDouble() / prior.width.coerceAtLeast(1)
                     val score = edge - centerShift * 0.045 - scaleShift * 0.035
                     if (score > bestScore) {
@@ -194,15 +192,14 @@ object VideoSyncAnalyzer {
             confidences[pair] = abs(d)
         }
 
-        // The first pair is always WHITE|BLACK. It protects against false decoding from content.
         if (bits[0] != 1 || confidences[0] < 0.12) return null
         val confidence = confidences.average()
-        if (confidence < 0.095 || confidences.drop(1).minOrNull() ?: 0.0 < 0.07) return null
+        val weakestDataPair = confidences.drop(1).minOrNull() ?: 0.0
+        if (confidence < 0.095 || weakestDataPair < 0.07) return null
         val step = bits[1] or (bits[2] shl 1) or (bits[3] shl 2)
         return MarkerReading(step, confidence.coerceIn(0.0, 1.0))
     }
 
-    /** Returns a 16:9 rectangle with the same center and roughly the same area. */
     fun snapTo16By9(frame: PreviewFrame, rect: NormalizedRect): NormalizedRect {
         return pixelToNormalized(
             snapPixelTo16By9(normalizedToPixel(rect, frame.width, frame.height), frame.width, frame.height),
@@ -241,7 +238,9 @@ object VideoSyncAnalyzer {
         if (top < 0) { bottom -= top; top = 0 }
         if (right > maxW) { left -= right - maxW; right = maxW }
         if (bottom > maxH) { top -= bottom - maxH; bottom = maxH }
-        return PixelRect(left.coerceAtLeast(0), top.coerceAtLeast(0), right, bottom)
+        left = left.coerceAtLeast(0)
+        top = top.coerceAtLeast(0)
+        return PixelRect(left, top, right.coerceAtMost(maxW), bottom.coerceAtMost(maxH))
     }
 
     private fun snapPixelTo16By9(r: PixelRect, maxW: Int, maxH: Int): PixelRect {
