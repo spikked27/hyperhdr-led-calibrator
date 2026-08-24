@@ -6,16 +6,17 @@ import android.view.Surface
 import android.view.TextureView
 import kotlin.math.max
 
-/** Camera2 does not rotate/scale a TextureView preview for us. */
+/** Camera2 preview geometry helper. */
 object PreviewGeometry {
     const val BUFFER_WIDTH = 1280
     const val BUFFER_HEIGHT = 720
 
     /**
-     * Apply the standard Camera2 center-crop transform for a 1280x720 stream. Beta 9 runs the
-     * calibration activity in sensorLandscape so the displayed preview and the TV are both 16:9.
-     * The same transform is seen by TextureView.getBitmap(), keeping overlay/detection coordinates
-     * aligned with what the user actually sees.
+     * Beta 9.1 runs in portrait and presents the camera viewport as 9:16. Camera2/SurfaceTexture
+     * already supplies the producer transform for the normal portrait case, so we must not force a
+     * landscape 16:9 buffer into that portrait viewport. Doing so was the source of the "smushed"
+     * Beta 8/9 preview. Landscape transforms are retained as a defensive fallback for OEM rotation
+     * behavior, but normal portrait is intentionally identity.
      */
     fun configure(view: TextureView) {
         val width = view.width
@@ -24,13 +25,20 @@ object PreviewGeometry {
 
         val rotation = view.display?.rotation ?: Surface.ROTATION_0
         val matrix = Matrix()
-        val viewRect = RectF(0f, 0f, width.toFloat(), height.toFloat())
-        val centerX = viewRect.centerX()
-        val centerY = viewRect.centerY()
 
         when (rotation) {
+            Surface.ROTATION_0 -> {
+                // Correct portrait layout is handled by the 9:16 TextureView dimensions.
+            }
+            Surface.ROTATION_180 -> {
+                matrix.postRotate(180f, width / 2f, height / 2f)
+            }
             Surface.ROTATION_90, Surface.ROTATION_270 -> {
+                // Defensive fallback if an OEM reports a transient landscape display rotation.
+                val viewRect = RectF(0f, 0f, width.toFloat(), height.toFloat())
                 val bufferRect = RectF(0f, 0f, BUFFER_HEIGHT.toFloat(), BUFFER_WIDTH.toFloat())
+                val centerX = viewRect.centerX()
+                val centerY = viewRect.centerY()
                 bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
                 matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL)
                 val scale = max(
@@ -43,22 +51,6 @@ object PreviewGeometry {
                     centerX,
                     centerY,
                 )
-            }
-            Surface.ROTATION_180 -> matrix.postRotate(180f, centerX, centerY)
-            else -> {
-                // Some OEMs report ROTATION_0 even after a fixed-orientation activity is created.
-                // Preserve aspect rather than stretching in that case.
-                val sourceAspect = BUFFER_WIDTH.toFloat() / BUFFER_HEIGHT
-                val viewAspect = width.toFloat() / height
-                if (kotlin.math.abs(sourceAspect - viewAspect) > 0.01f) {
-                    val scale = max(width.toFloat() / BUFFER_WIDTH, height.toFloat() / BUFFER_HEIGHT)
-                    matrix.postScale(
-                        BUFFER_WIDTH * scale / width,
-                        BUFFER_HEIGHT * scale / height,
-                        centerX,
-                        centerY,
-                    )
-                }
             }
         }
         view.setTransform(matrix)
