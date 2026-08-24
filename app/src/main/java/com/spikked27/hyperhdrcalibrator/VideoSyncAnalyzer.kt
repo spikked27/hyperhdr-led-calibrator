@@ -1,24 +1,24 @@
 package com.spikked27.hyperhdrcalibrator
 
 import kotlin.math.abs
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
- * Preview-only analysis for Beta 9.
+ * Preview-only geometry and synchronization analysis.
  *
- * Calibration color values never come from this path; CameraSampler RAW_SENSOR/YUV spatial
- * measurements remain the source of calibration data. This analyzer only does three jobs:
- *  1. find the physical 16:9 TV border while the TV is black and the backlight is white,
- *  2. keep the fitted border attached to the TV while the phone moves, and
- *  3. decode the explicit machine-readable step marker embedded in the companion video.
+ * Beta 9.2 deliberately separates three ideas that Beta 9 mixed together:
+ *  1. the CAMERA frame may be portrait or landscape,
+ *  2. a TV is *usually close to* 16:9 in image-space, but perspective can change its bounding box,
+ *  3. once the user accepts a detected TV border the on-screen guide is frozen; the user keeps the
+ *     TV inside that guide instead of the app continuously changing its shape underneath them.
  *
- * Using a marker instead of inferring video state from RGB removes camera white-balance/exposure
- * from the synchronization problem. A missed frame can therefore resynchronize on the next frame.
+ * Actual calibration colors still come from CameraSampler RAW_SENSOR/YUV spatial measurements.
  */
 object VideoSyncAnalyzer {
     const val TV_ASPECT = 16.0 / 9.0
-    private const val MIN_HALO_CONTRAST = 0.075
+    private const val MIN_HALO_CONTRAST = 0.070
 
     data class MarkerReading(
         val step: Int,
@@ -32,9 +32,11 @@ object VideoSyncAnalyzer {
     }
 
     /**
-     * Finds a dark 16:9 rectangle surrounded by a brighter halo. This is deliberately used before
-     * the video starts: the TV is paused on black and HyperHDR is commanded to white, creating a
-     * strong screen-vs-wall boundary even for an OLED on a dark wall.
+     * Find a dark TV-like rectangle surrounded by the WHITE HyperHDR wall halo.
+     *
+     * 16:9 is only a scoring prior. We intentionally evaluate a broad range of apparent aspect
+     * ratios so portrait use, perspective, slight keystone, bezels, and off-axis framing do not make
+     * a legitimate TV impossible to select.
      */
     fun detectBlackTvWithHalo(frame: PreviewFrame): NormalizedRect? {
         val luma = DoubleArray(frame.width * frame.height) { i -> luminance(frame.pixels[i]) }
@@ -42,82 +44,86 @@ object VideoSyncAnalyzer {
         var best: PixelRect? = null
         var bestScore = Double.NEGATIVE_INFINITY
 
-        val minWidth = (frame.width * 0.30).toInt().coerceAtLeast(24)
-        val maxWidth = (frame.width * 0.94).toInt().coerceAtLeast(minWidth)
-        val widthStep = max(4, frame.width / 35)
-        val xStep = max(3, frame.width / 55)
-        val yStep = max(3, frame.height / 80)
+        val minWidth = (frame.width * 0.30).toInt().coerceAtLeast(28)
+        val maxWidth = (frame.width * 0.95).toInt().coerceAtLeast(minWidth)
+        val widthStep = max(5, frame.width / 32)
+        val xStep = max(4, frame.width / 42)
+        val yStep = max(4, frame.height / 60)
+        val aspectCandidates = doubleArrayOf(1.38, 1.55, TV_ASPECT, 2.02, 2.22)
 
         var w = minWidth
         while (w <= maxWidth) {
-            val h = (w / TV_ASPECT).toInt().coerceAtLeast(12)
-            if (h >= frame.height * 0.72) {
-                w += widthStep
-                continue
-            }
-            val xMin = 0
-            val xMax = frame.width - w
-            val yMin = (frame.height * 0.08).toInt()
-            val yMax = (frame.height * 0.92).toInt() - h
-            var y = yMin
-            while (y <= yMax) {
-                var x = xMin
-                while (x <= xMax) {
-                    val inner = PixelRect(x, y, x + w, y + h)
-                    val marginX = max(3, (w * 0.08).toInt())
-                    val marginY = max(3, (h * 0.13).toInt())
-                    val outer = PixelRect(
-                        (inner.left - marginX).coerceAtLeast(0),
-                        (inner.top - marginY).coerceAtLeast(0),
-                        (inner.right + marginX).coerceAtMost(frame.width),
-                        (inner.bottom + marginY).coerceAtMost(frame.height),
-                    )
-                    if (outer.area <= inner.area) {
-                        x += xStep
-                        continue
-                    }
+            for (aspect in aspectCandidates) {
+                val h = (w / aspect).toInt().coerceAtLeast(14)
+                if (h >= frame.height * 0.78 || h < 14) continue
 
-                    val insetX = max(2, (w * 0.06).toInt())
-                    val insetY = max(2, (h * 0.07).toInt())
-                    val screen = PixelRect(
-                        inner.left + insetX,
-                        inner.top + insetY,
-                        inner.right - insetX,
-                        inner.bottom - insetY,
-                    )
-                    val screenMean = integral.mean(screen)
-                    val outerMean = integral.ringMean(outer, inner)
-                    val contrast = outerMean - screenMean
-                    if (contrast < MIN_HALO_CONTRAST || outerMean < 0.09) {
-                        x += xStep
-                        continue
-                    }
+                val xMax = frame.width - w
+                val yMin = (frame.height * 0.04).toInt()
+                val yMax = (frame.height * 0.96).toInt() - h
+                if (xMax < 0 || yMax < yMin) continue
 
-                    val edge = edgeContrast(integral, inner)
-                    val cx = (inner.left + inner.right) * 0.5 / frame.width
-                    val cy = (inner.top + inner.bottom) * 0.5 / frame.height
-                    val centerPenalty = sqrt((cx - 0.5) * (cx - 0.5) + (cy - 0.50) * (cy - 0.50))
-                    val areaBonus = inner.area.toDouble() / (frame.width * frame.height)
-                    val score = contrast * 3.0 + edge * 1.8 + areaBonus * 0.10 - centerPenalty * 0.18
-                    if (score > bestScore) {
-                        bestScore = score
-                        best = inner
+                var y = yMin
+                while (y <= yMax) {
+                    var x = 0
+                    while (x <= xMax) {
+                        val inner = PixelRect(x, y, x + w, y + h)
+                        val marginX = max(3, (w * 0.08).toInt())
+                        val marginY = max(3, (h * 0.13).toInt())
+                        val outer = PixelRect(
+                            (inner.left - marginX).coerceAtLeast(0),
+                            (inner.top - marginY).coerceAtLeast(0),
+                            (inner.right + marginX).coerceAtMost(frame.width),
+                            (inner.bottom + marginY).coerceAtMost(frame.height),
+                        )
+                        if (outer.area <= inner.area) {
+                            x += xStep
+                            continue
+                        }
+
+                        val insetX = max(2, (w * 0.06).toInt())
+                        val insetY = max(2, (h * 0.07).toInt())
+                        val screen = PixelRect(
+                            inner.left + insetX,
+                            inner.top + insetY,
+                            inner.right - insetX,
+                            inner.bottom - insetY,
+                        )
+                        val screenMean = integral.mean(screen)
+                        val haloMean = integral.ringMean(outer, inner)
+                        val contrast = haloMean - screenMean
+                        if (contrast < MIN_HALO_CONTRAST || haloMean < 0.08) {
+                            x += xStep
+                            continue
+                        }
+
+                        val edge = edgeContrast(integral, inner)
+                        val cx = (inner.left + inner.right) * 0.5 / frame.width
+                        val cy = (inner.top + inner.bottom) * 0.5 / frame.height
+                        val centerPenalty = sqrt((cx - 0.5) * (cx - 0.5) + (cy - 0.5) * (cy - 0.5))
+                        val areaBonus = inner.area.toDouble() / (frame.width * frame.height)
+                        val apparentAspect = inner.width.toDouble() / inner.height.coerceAtLeast(1)
+                        val aspectPenalty = abs(ln(apparentAspect / TV_ASPECT))
+
+                        val score = contrast * 3.2 + edge * 1.9 + areaBonus * 0.11 -
+                            centerPenalty * 0.14 - aspectPenalty * 0.13
+                        if (score > bestScore) {
+                            bestScore = score
+                            best = inner
+                        }
+                        x += xStep
                     }
-                    x += xStep
+                    y += yStep
                 }
-                y += yStep
             }
             w += widthStep
         }
 
-        val rect = best ?: return null
-        return pixelToNormalized(rect, frame.width, frame.height)
+        return best?.let { pixelToNormalized(it, frame.width, frame.height) }
     }
 
     /**
-     * Refines an already-known TV rectangle using local edge contrast while enforcing a physical
-     * 16:9 screen shape. The returned overlay therefore snaps to the TV border instead of following
-     * an arbitrary same-colored blob.
+     * Refine an acquisition candidate before lock. Width and height can both move slightly; 16:9 is
+     * a soft score only. Beta 9.2 stops calling this method once the guide is locked.
      */
     fun refineBorder(frame: PreviewFrame, previous: NormalizedRect): NormalizedRect {
         val luma = DoubleArray(frame.width * frame.height) { i -> luminance(frame.pixels[i]) }
@@ -125,56 +131,92 @@ object VideoSyncAnalyzer {
         val prior = normalizedToPixel(previous, frame.width, frame.height)
         val centerX = (prior.left + prior.right) / 2
         val centerY = (prior.top + prior.bottom) / 2
-        var best = snapPixelTo16By9(prior, frame.width, frame.height)
-        var bestScore = edgeContrast(integral, best)
+        var best = prior
+        var bestScore = localBorderScore(integral, prior, 0.0, 0.0)
 
-        val baseWidth = best.width
-        for (scalePct in 90..110 step 4) {
-            val w = (baseWidth * scalePct / 100.0).toInt().coerceAtLeast(24)
-            val h = (w / TV_ASPECT).toInt().coerceAtLeast(12)
-            val maxDx = max(5, (prior.width * 0.16).toInt())
-            val maxDy = max(5, (prior.height * 0.22).toInt())
-            val step = max(2, frame.width / 90)
+        val maxDx = max(4, (prior.width * 0.12).toInt())
+        val maxDy = max(4, (prior.height * 0.16).toInt())
+        val moveStep = max(2, frame.width / 100)
+        val widthScales = doubleArrayOf(0.92, 0.97, 1.0, 1.03, 1.08)
+        val heightScales = doubleArrayOf(0.92, 0.97, 1.0, 1.03, 1.08)
+
+        for (ws in widthScales) for (hs in heightScales) {
+            val w = (prior.width * ws).toInt().coerceAtLeast(24)
+            val h = (prior.height * hs).toInt().coerceAtLeast(14)
             var dy = -maxDy
             while (dy <= maxDy) {
                 var dx = -maxDx
                 while (dx <= maxDx) {
                     val candidate = centeredRect(centerX + dx, centerY + dy, w, h, frame.width, frame.height)
-                    val edge = edgeContrast(integral, candidate)
                     val nx = dx.toDouble() / prior.width.coerceAtLeast(1)
                     val ny = dy.toDouble() / prior.height.coerceAtLeast(1)
-                    val centerShift = sqrt(nx * nx + ny * ny)
-                    val scaleShift = abs(candidate.width - prior.width).toDouble() / prior.width.coerceAtLeast(1)
-                    val score = edge - centerShift * 0.045 - scaleShift * 0.035
+                    val shift = sqrt(nx * nx + ny * ny)
+                    val scaleChange = abs(ws - 1.0) + abs(hs - 1.0)
+                    val score = localBorderScore(integral, candidate, shift, scaleChange)
                     if (score > bestScore) {
                         bestScore = score
                         best = candidate
                     }
-                    dx += step
+                    dx += moveStep
                 }
-                dy += step
+                dy += moveStep
             }
         }
         return pixelToNormalized(best, frame.width, frame.height)
     }
 
+    private fun localBorderScore(integral: Integral, r: PixelRect, shift: Double, scaleChange: Double): Double {
+        if (r.width < 12 || r.height < 8) return Double.NEGATIVE_INFINITY
+        val apparentAspect = r.width.toDouble() / r.height.coerceAtLeast(1)
+        val aspectPenalty = abs(ln(apparentAspect / TV_ASPECT))
+        return edgeContrast(integral, r) - shift * 0.045 - scaleChange * 0.025 - aspectPenalty * 0.018
+    }
+
     /**
-     * Decode the 4 Manchester-like marker pairs in the top-left safe edge of the TV.
-     * Pair 0 is a fixed orientation/sync bit (1). Pairs 1..3 encode step 0..7 LSB first.
-     * Every bit contains one black and one white half, so the code remains readable on every patch,
-     * including WHITE and BLACK, and is independent of camera white balance.
+     * Decode the 4 paired black/white marker bits. The guide is frozen during calibration, so the
+     * decoder searches a small neighborhood around the guide's expected top-left marker location.
+     * This tolerates ordinary hand motion while still letting the user visually keep the TV inside
+     * the green box.
      */
     fun decodeMarker(frame: PreviewFrame, tv: NormalizedRect): MarkerReading? {
-        val px = normalizedToPixel(tv, frame.width, frame.height)
-        if (px.width < 48 || px.height < 24) return null
+        val locked = normalizedToPixel(tv, frame.width, frame.height)
+        if (locked.width < 44 || locked.height < 22) return null
 
-        val markerLeft = px.left + (px.width * 0.055).toInt()
-        val markerTop = px.top + (px.height * 0.055).toInt()
-        val markerWidth = (px.width * 0.50).toInt().coerceAtLeast(32)
-        val markerHeight = (px.height * 0.125).toInt().coerceAtLeast(5)
-        val pairWidth = markerWidth / 4.0
         val luma = DoubleArray(frame.width * frame.height) { i -> luminance(frame.pixels[i]) }
         val integral = Integral(frame.width, frame.height, luma)
+        var best: MarkerReading? = null
+
+        val dxFractions = doubleArrayOf(-0.055, -0.0275, 0.0, 0.0275, 0.055)
+        val dyFractions = doubleArrayOf(-0.070, -0.035, 0.0, 0.035, 0.070)
+        val scaleFractions = doubleArrayOf(0.94, 1.0, 1.06)
+
+        for (scale in scaleFractions) {
+            val w = (locked.width * scale).toInt().coerceAtLeast(44)
+            val h = (locked.height * scale).toInt().coerceAtLeast(22)
+            val baseCx = (locked.left + locked.right) / 2
+            val baseCy = (locked.top + locked.bottom) / 2
+            for (dyf in dyFractions) for (dxf in dxFractions) {
+                val candidate = centeredRect(
+                    baseCx + (locked.width * dxf).toInt(),
+                    baseCy + (locked.height * dyf).toInt(),
+                    w,
+                    h,
+                    frame.width,
+                    frame.height,
+                )
+                val reading = decodeMarkerAt(integral, candidate) ?: continue
+                if (best == null || reading.confidence > best!!.confidence) best = reading
+            }
+        }
+        return best
+    }
+
+    private fun decodeMarkerAt(integral: Integral, px: PixelRect): MarkerReading? {
+        val markerLeft = px.left + (px.width * 0.055).toInt()
+        val markerTop = px.top + (px.height * 0.055).toInt()
+        val markerWidth = (px.width * 0.50).toInt().coerceAtLeast(28)
+        val markerHeight = (px.height * 0.125).toInt().coerceAtLeast(4)
+        val pairWidth = markerWidth / 4.0
 
         val bits = IntArray(4)
         val confidences = DoubleArray(4)
@@ -183,8 +225,8 @@ object VideoSyncAnalyzer {
             val x1 = (markerLeft + (pair + 0.5) * pairWidth).toInt()
             val x2 = (markerLeft + (pair + 1.0) * pairWidth).toInt()
             val y0 = markerTop
-            val y1 = (markerTop + markerHeight).coerceAtMost(frame.height)
-            if (x2 > frame.width || x1 <= x0 || y1 <= y0) return null
+            val y1 = (markerTop + markerHeight).coerceAtMost(integral.height)
+            if (x0 < 0 || x2 > integral.width || x1 <= x0 || y0 < 0 || y1 <= y0) return null
             val a = integral.mean(PixelRect(x0, y0, x1, y1))
             val b = integral.mean(PixelRect(x1, y0, x2, y1))
             val d = a - b
@@ -192,14 +234,15 @@ object VideoSyncAnalyzer {
             confidences[pair] = abs(d)
         }
 
-        if (bits[0] != 1 || confidences[0] < 0.12) return null
+        if (bits[0] != 1 || confidences[0] < 0.10) return null
+        val weakestData = confidences.drop(1).minOrNull() ?: 0.0
         val confidence = confidences.average()
-        val weakestDataPair = confidences.drop(1).minOrNull() ?: 0.0
-        if (confidence < 0.095 || weakestDataPair < 0.07) return null
+        if (confidence < 0.085 || weakestData < 0.060) return null
         val step = bits[1] or (bits[2] shl 1) or (bits[3] shl 2)
         return MarkerReading(step, confidence.coerceIn(0.0, 1.0))
     }
 
+    /** Retained for old tests/rollback code; Beta 9.2 acquisition does not force this shape. */
     fun snapTo16By9(frame: PreviewFrame, rect: NormalizedRect): NormalizedRect {
         return pixelToNormalized(
             snapPixelTo16By9(normalizedToPixel(rect, frame.width, frame.height), frame.width, frame.height),
