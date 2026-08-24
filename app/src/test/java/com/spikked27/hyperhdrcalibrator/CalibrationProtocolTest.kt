@@ -20,9 +20,13 @@ class CalibrationProtocolTest {
         assertEquals(expected, CalibrationProtocol.ledSequence)
     }
 
-    @Test fun videoLeavesLargeFinalBlackWindowForAutomaticLedPass() {
+    @Test fun videoLeavesTimeForReadyCountdownAndBorderAcquisition() {
+        assertTrue(CalibrationProtocol.BORDER_COUNTDOWN_SECONDS >= 3)
+        assertTrue(
+            CalibrationProtocol.VIDEO_LEAD_IN_SECONDS >= CalibrationProtocol.BORDER_COUNTDOWN_SECONDS + 7,
+            "Black lead-in should leave several seconds for border detection after the framing countdown",
+        )
+        assertTrue(CalibrationProtocol.TV_PATCH_SECONDS >= 10)
         assertTrue(CalibrationProtocol.FINAL_BLACK_SECONDS >= 90)
-        assertTrue(CalibrationProtocol.TV_PATCH_SECONDS >= 8)
-        assertTrue(CalibrationProtocol.VIDEO_LEAD_IN_SECONDS >= 5)
     }
 }
