@@ -16,32 +16,34 @@ The transcript was extracted from the MHT supplied by the user. It preserves all
 
 ## Current source of truth
 
-**Latest implemented app version: `0.1.0-beta.8`.**
+**Latest field-test candidate: `0.1.0-beta.9.2`.**
 
-- Beta 8 PR: #8 — `Beta 8: synchronized automatic video calibration`
-- PR head: `74aabfbf73848ee336023bccf18bb4dae5a48880`
-- Main Beta 8 commit: `4bf6f083cfe0e73408a8b1c51851679adba9e53a`
-- Android CI run: `32656393303` / run #27 — **success**
-- APK artifact: `hyperhdr-led-calibrator-beta`
-- Artifact ID: `9497566184`
-- Artifact size: 9,211,677 bytes
-- Artifact digest: `sha256:9fa33e55a84eafacab1f3b16d1da25b0c017fb0996d6dfd34dc183823ba5a7f8`
-- Artifact created: 2026-08-23 17:57:33 UTC
-- Artifact expires: 2026-11-21 17:55:31 UTC
+Beta 8 was the recovered baseline. Beta 9/9.1 were field-tested and exposed orientation/overlay/synchronization problems. Beta 9.2 is the current corrective candidate on branch `beta9-reliable-tracking` / PR #9.
 
-The Beta 8 CI workflow runs JVM unit tests, Android lint, `assembleDebug`, and APK upload. The PR-head run completed successfully. No app-code changes have been made after Beta 8 during this recovery session; only project documentation/continuation files were added.
+- Beta 9.2 validated code head: `dbd25e1c8a8c600de0bcc77f1c34bc0255d79ea1`
+- Android CI run: `32686135190` / run #51 — **success**
+- Unit tests: **success**
+- Android lint: **success**
+- Debug APK build: **success**
+- Artifact upload: **success**
+- APK artifact ID: `9505748640`
+- CI artifact digest: `sha256:39dbfa0a4a2d5469f6b59c06744f5ccc232d131a77c13939501bc8fe8d8fdc1b`
+- Extracted APK SHA-256: `3cbc98de5642436afb1878415fc616dfde0929123c348fd65475980bb867ddd3`
+- Matching Beta 9.2 video: 1920×1080 H.264, 240 s (4:00)
+- Video SHA-256: `f012dfc90d7541797e8bf0adb3ef19f80810c449143fe45bb2c5c818dedce789`
+- Detailed Beta 9 field notes / Beta 9.2 response: `docs/BETA9_FIELD_NOTES.md`
 
 ## Product goal
 
 Use an Android phone camera as a relative color comparator to calibrate HyperHDR RGBW bias-light output to the TV screen. The phone is not treated as a laboratory colorimeter. Accuracy comes from measuring TV and reflected LED light with the same camera, locked controls, RAW when available, black subtraction, white referencing, robust spatial sampling, and relative color math.
 
-Persistent HyperHDR ICE settings are not automatically overwritten in the current beta; the app calculates and reports recommended full ICE anchors.
+The current candidate presents an explicit **Commit calibration values to HyperHDR** action at the end rather than automatically overwriting persistent settings during the measurement process.
 
 ## Recovered beta chronology
 
 ### Initial beta / Beta 1
 
-Established the first Android implementation: HyperHDR SSDP discovery, JSON control, TV/LED measurement, calibration solver, CI/tests, and debug APK artifact. PR #2 explicitly records field feedback from Beta 1.
+Established the first Android implementation: HyperHDR SSDP discovery, JSON control, TV/LED measurement, calibration solver, CI/tests, and debug APK artifact. PR #2 records field feedback from Beta 1.
 
 ### Beta 2 — guided Material 3 flow
 
@@ -86,7 +88,7 @@ PR #5 / merge `7a96e436d509c8df55d298970919cd8a1e4d5d586`.
 - Dedicated analyzing screen.
 - Manual retry if automatic black capture fails.
 - Live status/error messages.
-- Solver failure restores HyperHDR control and shows the exact captured values/error.
+- Solver failure restores HyperHDR control and shows exact captured values/error.
 
 ### Beta 6 — main 1× camera + RAW manual measurements
 
@@ -108,14 +110,14 @@ PR #6 / merge `a882ee9861dd7a3e5b6acb124db5200bc85ea6a3`.
 PR #7 / final head `167e14056a40c3459d3078bacfd60ed33155d0f6`.
 
 - Keep the phone aimed at the TV + wall for the entire run.
-- Detect TV rectangle from the initial WHITE reference while HyperHDR LEDs are off.
-- LED phase leaves TV BLACK and measures the surrounding wall halo.
+- Detect TV rectangle from initial WHITE reference while HyperHDR LEDs are off.
+- LED phase leaves TV BLACK and measures surrounding wall halo.
 - Sample full RAW frame into a spatial grid; median-combine 5 frames per measurement.
-- Build one wall reference from LED WHITE and use the same retained wall tiles for every color.
-- Subtract BLACK per tile and channel-wise divide by WHITE per tile to cancel much of the brightness gradient, lens shading, wall reflectance variation, and TV/LED exposure difference.
+- Build one wall reference from LED WHITE and use same retained wall tiles for every color.
+- Subtract BLACK per tile and channel-wise divide by WHITE per tile to cancel brightness gradient, lens shading, wall reflectance variation, and TV/LED exposure difference.
 - Reject colored/shadowed wall outliers without rejecting normal brightness gradients.
 - White-reference TV and LED math while preserving relative primary strength.
-- Preserve WHITE `[255,255,255]` so threshold 1.0 keeps using the dedicated W diode.
+- Preserve WHITE `[255,255,255]` so threshold 1.0 keeps using dedicated W diode.
 - Enumerate physical rear camera sensors and provide **Switch rear camera** before capture.
 
 Compatibility fixes immediately before Beta 8:
@@ -127,120 +129,122 @@ Compatibility fixes immediately before Beta 8:
 
 PR #8 / main commit `4bf6f083cfe0e73408a8b1c51851679adba9e53a`.
 
-Beta 8 implements the last visible user request in the archived thread: fix the distorted preview, make the guide fit the actual TV, automatically capture when the video changes colors, automatically begin LED capture on the final black screen, tolerate normal handheld motion, and make the app/video operate as one coordinated workflow with a **START VIDEO NOW** action.
+Implemented the first automatic synchronized app/video pass:
 
-Implemented behavior:
+- Automatic TV sequence: WHITE, RED, GREEN, BLUE, CYAN, MAGENTA, YELLOW, BLACK.
+- Preview-based TV/color recognition for synchronization.
+- RAW/spatial capture for actual measurements.
+- Automatic final-BLACK transition to LED-wall calibration.
+- Spatial wall alignment for handheld drift.
+- Dynamic TV outline.
 
-- `AutoCalibrationActivity` becomes the launcher; the former manual activity remains internal.
-- Preview UI is 16:9 and Camera2 preview buffer is 1280×720, replacing the stretched arbitrary preview box.
-- Fixed fake TV guide removed; a white outline is drawn from the detected/tracked TV rectangle.
-- **START VIDEO NOW** first forces HyperHDR backlights BLACK and arms detection.
-- App recognizes the actual TV image rather than trusting elapsed time.
-- Automatic TV sequence: **WHITE → RED → GREEN → BLUE → CYAN → MAGENTA → YELLOW → BLACK**.
-- Each accepted TV patch is measured with 5-frame spatial capture.
-- Initial WHITE establishes TV rectangle and camera reference.
-- Later colored frames reacquire the TV around the previous rectangle; BLACK retains the last rectangle.
-- Final TV BLACK automatically starts the LED phase with no additional button press.
-- LED WHITE establishes the wall exposure/reference.
-- LED BLACK is captured before and after the color sequence; the two black fields are median-combined.
-- RED/GREEN/BLUE/CYAN/MAGENTA/YELLOW LED fields are controlled and captured automatically while the TV stays BLACK.
-- Wall fields are spatially translation-aligned to the WHITE reference before channel-wise normalization.
-- Alignment searches **±3 tiles** in X/Y for modest handheld drift.
-- Solver reports full HyperHDR ICE anchors, estimated relative before/after error, and per-color spatial diagnostics.
-- Temporary HyperHDR calibration priority is cleared on success and cleanup/error paths.
+### Beta 8 real-device feedback
 
-## Beta 8 app/video protocol
+The user reported:
 
-`CalibrationProtocol.kt` defines:
+- Camera preview still heavily distorted / “smushed.”
+- Exiting and re-entering while the app was running could freeze with a camera error.
+- Automatic TV/backlight color recognition was unreliable and could miss RED, leaving the app hung waiting for a color while the video continued.
+- TV 16:9 geometry should help border detection.
+- Backlights should be ON while detecting the TV against a BLACK screen, then turn OFF before calibration.
+- Add an end-of-run button to commit calibration values.
 
-- Initial BLACK lead-in: **6 s**.
-- Each non-final TV patch: **10 s**.
+### Beta 9 — marker synchronization + TV-border acquisition
+
+PR #9 initial candidate.
+
+- Replaced apparent-RGB synchronization with an explicit high-contrast machine-readable marker in the companion video.
+- Added BLACK-TV + WHITE-backlight border acquisition.
+- Added 16:9 TV geometry constraint.
+- Added direct HyperHDR commit button.
+- Added lifecycle cancellation/Camera2 cleanup.
+
+### Beta 9 / 9.1 real-device feedback
+
+The user reported:
+
+- The desired order should be: point camera at TV → press READY → app tells user to start video → countdown gives time to finish framing → border detection begins while TV is BLACK and LEDs are ON.
+- Once the TV border is detected and locked, the guide should stop changing shape/position; the user will keep the TV inside the box.
+- 16:9 should be a TV-likelihood clue, not an exact hard-coded box/orientation.
+- Portrait operation worked, but TV detection effectively only worked in landscape.
+- After lock the app never recognized any colors and remained at **0/8**.
+
+Root cause found for the portrait/0-of-8 mismatch: Beta 9/9.1 still called `TextureView.getBitmap(320, 180)` unconditionally. A portrait preview was therefore internally resampled into a landscape analysis frame, squashing geometry used by both border detection and marker decoding.
+
+### Beta 9.2 — current candidate
+
+Beta 9.2 directly addresses the Beta 9/9.1 field feedback:
+
+- New launcher activity: `Beta92CalibrationActivity`.
+- Phone remains portrait.
+- Live analysis preserves the actual TextureView aspect ratio; only the long edge is reduced to 320 px.
+- New user sequence:
+  1. Open camera and point at TV.
+  2. Press **READY — START VIDEO**.
+  3. HyperHDR backlights turn WHITE.
+  4. App displays **START VIDEO NOW** and a **5-second countdown**.
+  5. Border detection begins after the countdown while the companion video is still BLACK.
+  6. TV candidate uses BLACK screen + WHITE wall halo.
+  7. 16:9 is a **soft scoring prior**, not an exact geometric requirement.
+  8. Stable candidate freezes into a GREEN guide.
+  9. Guide position and shape are not changed again during TV calibration.
+  10. HyperHDR backlights turn OFF.
+  11. Marker-driven TV capture starts automatically.
+- Marker decoder searches a small neighborhood around the frozen guide to tolerate normal hand drift while the user keeps the TV inside the box.
+- Missing colors remain recoverable on video replay without discarding completed captures.
+- RAW_SENSOR/YUV spatial measurement, wall normalization/alignment, solver, cleanup behavior and end-of-run HyperHDR commit remain intact.
+
+## Beta 9.2 app/video protocol
+
+- Initial unmarked BLACK video lead-in: **15 s**.
+- App framing countdown after READY: **5 s**.
+- Approximate border-detection budget after countdown: **10 s** before WHITE begins.
+- Each WHITE/RED/GREEN/BLUE/CYAN/MAGENTA/YELLOW TV patch: **15 s**.
 - Final BLACK: **120 s**.
-- Sequence: WHITE, RED, GREEN, BLUE, CYAN, MAGENTA, YELLOW, BLACK.
-- Preview analysis: **72×40** pixels.
-- Preview analysis interval: **120 ms**.
-- Stable matches required before capture: **4 frames**.
-- LED settle: **700 ms**.
-- LED WHITE exposure settle: **1200 ms**.
+- Total companion video duration: **240 s / 4:00**.
+- Marker sequence: WHITE, RED, GREEN, BLUE, CYAN, MAGENTA, YELLOW, BLACK.
+- Preview analysis interval: **100 ms**.
+- Stable marker detections required: **3**.
+- Stable border frames required: **6**.
+- Preview sampling preserves displayed aspect ratio; maximum analysis dimension is **320 px**.
 
-The app does not depend on exact video timing after start. Long stable video patches provide the state; the app recognizes the current patch and waits for four stable preview detections before the high-quality measurement. This is intentionally tolerant of small playback/start delays.
+## Beta 9.2 automated validation
 
-If no additional transition frames exist, these constants imply a nominal video duration of **3:16** (6 s + seven 10 s non-black patches + 120 s final black). The actual delivered MP4 has not yet been recovered, so this is a protocol-derived duration, not a verified file duration.
+CI run #51 passed all configured gates on code head `dbd25e1c8a8c600de0bcc77f1c34bc0255d79ea1`:
 
-## Beta 8 preview tracking
+1. JVM unit tests — **PASS**.
+2. Android lint — **PASS**.
+3. Debug APK build — **PASS**.
+4. APK artifact upload — **PASS**.
 
-`PreviewAnalyzer` is for sync and the on-screen TV outline; calibration values still use RAW_SENSOR when supported.
+Tests specifically include:
 
-- Initial WHITE detection compares a bright, neutral center component with the preview border/background.
-- Requires foreground ≥0.22 and ≥0.08 above background.
-- Segmentation threshold is 48% between background and foreground.
-- White-balance score threshold: 0.55.
-- TV sample is inset 18% inside the detected rectangle.
-- Handheld tracking searches the previous TV rectangle expanded ~45% horizontally and ~55% vertically.
-- Expected-color segmentation distance threshold: 0.43.
-- Tracked area ratio allowed: ~0.42–1.85 of previous.
-- Relative aspect-ratio factor allowed: ~0.62–1.62.
-- BLACK uses the previous rectangle.
-- BLACK match threshold: ≤10.5% of WHITE-reference luma.
-- Expected-patch match limit: 0.27 for WHITE, 0.39 for colors.
+- portrait-frame TV detection,
+- a TV whose apparent aspect is not exactly 16:9,
+- all eight marker IDs in portrait analysis geometry,
+- marker recovery when the actual TV shifts slightly inside the frozen guide,
+- sufficient black-lead timing after the READY countdown.
 
-RAW/spatial capture has a separate TV-reacquisition pass with its own geometry/chroma sanity checks.
+## Current real-device validation priority
 
-## Beta 8 spatial wall alignment
+Beta 9.2 needs a real phone/TV run. Highest-value checks:
 
-- Wall reference is an annulus around the detected TV.
-- LED WHITE minus LED BLACK establishes the per-tile reference.
-- Low-signal and chromatic-outlier tiles are removed.
-- The same retained WHITE-reference model is reused for every LED color.
-- Current wall-light field is translated against WHITE by up to ±3 grid tiles.
-- Shift scoring compares log-luminance field shape after removing global brightness scale.
-- Each color is black-subtracted, divided channel-by-channel by aligned WHITE, robustly combined, and filtered for chromatic outliers.
-- Results report tiles used, P90/P10 brightness-gradient ratio, alignment dx/dy, and chroma spread.
-
-## Camera/exposure behavior retained in Beta 8
-
-- Physical rear-camera selection from Beta 7.
-- Prefer normal/main ~1× camera and RAW-capable sensor.
-- RAW_SENSOR where possible; YUV fallback otherwise.
-- RAW black-level subtraction and white-level normalization.
-- First TV WHITE allows AE/AWB to settle, then locks exposure and white balance for TV references.
-- LED WHITE establishes a second exposure state for wall measurements while WB remains locked.
-- Manual-sensor path locks explicit shutter and ISO; non-manual path uses AE lock.
-- Physical-camera request/result API calls are guarded for OEM/API compatibility.
-
-## Validation status
-
-### Automated
-
-Beta 8 PR-head Android CI **passed**. The workflow runs:
-
-1. JVM unit tests.
-2. Android lint.
-3. Debug APK build.
-4. APK artifact upload.
-
-Beta 8 includes tests for synchronized protocol, preview TV detection/tracking, RAW TV tracking, strong wall gradients, and shifted wall fields in addition to the earlier solver/protocol/camera tests.
-
-### Real device
-
-The archived MHT contains the user’s feedback on the build immediately before Beta 8: it “worked really well,” camera selection “worked great,” but the preview was heavily distorted and the desired workflow was fully automatic/synchronized. Those requests became Beta 8.
-
-The supplied MHT snapshot ends while Beta 8 is being implemented and does not contain the later visible Beta 8 delivery or post-installation feedback. Therefore Beta 8’s source and automated CI/build status are verified, but its real-device behavior after delivery has not yet been recovered.
-
-## Remaining recovery gaps
-
-- Exact companion Beta 8 MP4 filename/location from the prior ChatGPT delivery.
-- Verify the delivered MP4 itself matches the 6 s / 10 s / 120 s protocol.
-- Exact prior ChatGPT APK filename; the GitHub CI build is recoverable as artifact ID `9497566184`.
-- Any user feedback after installing Beta 8.
-- Exact next request after the Beta 8 delivery, if there was one.
+1. READY/countdown workflow is intuitive and gives enough framing time.
+2. Portrait TV-border detection works without rotating the phone.
+3. Candidate box selects the real TV and does not require an exact 16:9 apparent bounding box.
+4. Green guide freezes completely once locked.
+5. Backlights remain WHITE during countdown/acquisition and shut OFF at lock.
+6. Marker capture advances from **0/8** through the TV sequence.
+7. Small handheld drift is tolerated as long as the TV remains inside the green guide.
+8. Final BLACK starts LED-wall measurement automatically.
+9. Commit calibration values button persists the solved ICE anchors when HyperHDR permissions allow it.
 
 ## Continuation rules
 
-- **Do not restart from README/Beta 0.1. Beta 8 is the current implementation.**
-- Use commit `4bf6f083cfe0e73408a8b1c51851679adba9e53a` as the Beta 8 implementation anchor.
-- Preserve automatic patch recognition, 16:9 preview geometry, dynamic TV tracking, RAW/spatial capture, wall-field alignment, fixed HyperHDR-instance selection, and cleanup behavior unless intentionally replacing them.
+- **Do not restart from README/Beta 0.1. Beta 9.2 is the current field-test candidate.**
+- Use `docs/BETA9_FIELD_NOTES.md` for the detailed latest device feedback.
+- Preserve portrait-safe aspect handling; never force a portrait TextureView into a fixed 320×180 analysis bitmap again.
+- Treat 16:9 as a TV detection prior, not a required apparent rectangle.
+- After border lock, keep the visible guide fixed unless the user explicitly requests tracking again.
 - Keep app and companion video protocol/version matched.
-- Highest-value next validation is a complete real-device Beta 8 run: confirm preview geometry/TV outline, full automatic patch sequence, final-BLACK transition, and wall alignment during normal handheld movement.
-- Do not automatically write persistent HyperHDR ICE settings without explicit approval.
-- Update this file after every beta or material device test.
+- Update this file after every material real-device test.
