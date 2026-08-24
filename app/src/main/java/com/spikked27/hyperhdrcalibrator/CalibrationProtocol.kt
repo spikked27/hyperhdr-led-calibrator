@@ -48,6 +48,10 @@ object CalibrationProtocol {
     const val STABLE_MARKER_FRAMES = 3
     const val STABLE_BORDER_FRAMES = 6
 
+    // Kept only because the non-launcher Beta 8 activity remains in the tree as a rollback/reference
+    // implementation. Beta 9 synchronization uses STABLE_MARKER_FRAMES instead.
+    const val STABLE_PREVIEW_FRAMES = 4
+
     const val LED_SETTLE_MS = 700L
     const val WHITE_EXPOSURE_SETTLE_MS = 1200L
 }
