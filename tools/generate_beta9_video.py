@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Generate the Beta 9 calibration video with robust machine-readable step markers.
+"""Generate the Beta 9.2 calibration video with robust machine-readable step markers.
 
 Requires ffmpeg in PATH. Output is 1920x1080 H.264 MP4 by default.
-The center ~80% of every screen remains a perfectly uniform calibration field; the marker is confined
-to the top-left edge and is outside the app's inset measurement ROI.
+The first 15 seconds are unmarked BLACK so the user can start playback, finish the app's framing
+countdown, and let the app acquire the TV border while HyperHDR backlights are WHITE. Once the
+border locks, the app turns the LEDs off before the first marked WHITE patch appears.
+
+The center ~80% of every marked screen remains a uniform calibration field; the marker is confined
+to the top-left edge and is outside the app's inset RAW measurement ROI.
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ from pathlib import Path
 WIDTH = 1920
 HEIGHT = 1080
 FPS = 30
-LEAD_IN = 8
+LEAD_IN = 15
 PATCH_SECONDS = 15
 FINAL_BLACK = 120
 
@@ -65,7 +69,7 @@ def paint_rect(data: bytearray, left: int, top: int, right: int, bottom: int, rg
 
 
 def run(output: Path) -> None:
-    with tempfile.TemporaryDirectory(prefix="beta9-video-") as td:
+    with tempfile.TemporaryDirectory(prefix="beta92-video-") as td:
         root = Path(td)
         segments: list[tuple[Path, int]] = []
         lead = root / "lead.ppm"
@@ -103,7 +107,7 @@ def run(output: Path) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("output", nargs="?", type=Path, default=Path("HyperHDR_LED_Calibration_Beta9.mp4"))
+    parser.add_argument("output", nargs="?", type=Path, default=Path("HyperHDR_LED_Calibration_Beta9.2.mp4"))
     args = parser.parse_args()
     run(args.output)
     print(args.output)
