@@ -14,7 +14,7 @@
         android:theme="@style/AppTheme">
         <activity
             android:name=".Beta9CalibrationActivity"
-            android:screenOrientation="sensorLandscape"
+            android:screenOrientation="portrait"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
