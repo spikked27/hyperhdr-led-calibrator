@@ -167,16 +167,16 @@ class Beta9CalibrationActivity : ComponentActivity() {
     }
 
     override fun onStop() {
-        // Invalidate every in-flight calibration callback before releasing the camera. A blocked RAW
-        // poll/sleep is interruptible, so cancel(true) prevents an old activity session from later
-        // touching the new Camera2 session when the user returns to the app.
+        // Invalidate capture work and release Camera2 before doing any network cleanup. This keeps
+        // activity transitions from waiting on HyperHDR TCP timeouts and prevents a stale camera
+        // callback from touching the next session after the user returns to the app.
         generation++
         activeCaptureJob?.cancel(true)
         activeCaptureJob = null
         previewHandler.removeCallbacks(previewRunnable)
         previewLoopPosted = false
-        runCatching { client?.clear() }
         closeCamera()
+        clearPriorityAsync(client)
         borderLightingActive = false
         videoArmed = false
         busy = false
@@ -194,11 +194,12 @@ class Beta9CalibrationActivity : ComponentActivity() {
         activeCaptureJob?.cancel(true)
         previewHandler.removeCallbacks(previewRunnable)
         val old = client
+        client = null
+        closeCamera()
         Thread {
             runCatching { old?.clear() }
             old?.close()
         }.start()
-        closeCamera()
         executor.shutdownNow()
         super.onDestroy()
     }
@@ -286,7 +287,7 @@ class Beta9CalibrationActivity : ComponentActivity() {
             StatusCard(statusMessage)
             InstructionCard("1", "Pause the Beta 9 video at 0:00", "The opening is an unmarked BLACK screen. Do not start playback yet.")
             InstructionCard("2", "Frame the full TV and wall", "The app turns the backlights WHITE while the TV is black, then snaps the overlay to a 16:9 TV border. Keep a useful wall halo visible around the screen.")
-            InstructionCard("3", "Wait for BORDER LOCKED", "As soon as the border is stable, the app turns the backlights back OFF. The white outline should sit on the actual TV border.")
+            InstructionCard("3", "Wait for BORDER LOCKED", "As soon as the border is stable, the app turns the backlights back OFF. The outline should sit on the actual TV border.")
             InstructionCard("4", "Press START VIDEO NOW", "The video carries an edge marker identifying each patch. The app no longer has to guess whether a processed camera frame looks red, green, or blue.")
             InstructionCard("5", "If a patch is missed, keep going", "Captured patches are retained. The app never hangs on one expected color; replay the video only if the final black reports a missing patch.")
             Button(modifier = Modifier.fillMaxWidth(), onClick = { beginCalibration() }) { Text("Open camera and find TV") }
@@ -333,7 +334,7 @@ class Beta9CalibrationActivity : ComponentActivity() {
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 val missing = missingTvPatches()
-                if (lastObservedStep == Patch.BLACK.ordinal && missing.isNotEmpty()) {
+                if (lastObservedStep == CalibrationProtocol.tvSequence.lastIndex && missing.isNotEmpty()) {
                     Text(
                         "Missing: ${missing.joinToString { it.label }}. Restart the video at 0:00; already-captured colors will be skipped automatically.",
                         color = MaterialTheme.colorScheme.error,
@@ -375,7 +376,7 @@ class Beta9CalibrationActivity : ComponentActivity() {
             Text(
                 when {
                     stage == Stage.BORDER && borderLocked -> "BORDER LOCKED • 16:9"
-                    stage == Stage.BORDER -> "TV black • backlights on • fitting 16:9 border"
+                    stage == Stage.BORDER -> "TV black • backlights on • snapping to 16:9 border"
                     markerStep != null -> "Video marker ${markerStep!! + 1}/8 • border tracked"
                     else -> "Watching Beta 9 sync marker"
                 },
@@ -558,7 +559,7 @@ class Beta9CalibrationActivity : ComponentActivity() {
                 uiIfCurrent(token) {
                     borderLightingActive = true
                     busy = false
-                    statusMessage = "Backlights ON. Keep the video paused on BLACK while the white box snaps to the TV border."
+                    statusMessage = "Backlights ON. Keep the video paused on BLACK while the box snaps to the TV border."
                 }
             } catch (e: Exception) {
                 uiIfCurrent(token) {
@@ -571,17 +572,21 @@ class Beta9CalibrationActivity : ComponentActivity() {
 
     private fun analyzeBorderPreview() {
         val frame = readPreviewFrame() ?: return
-        val candidate = VideoSyncAnalyzer.detectBlackTvWithHalo(frame)
+        val prior = borderCandidate
+        val candidate = if (prior == null) {
+            VideoSyncAnalyzer.detectBlackTvWithHalo(frame)
+        } else {
+            VideoSyncAnalyzer.refineBorder(frame, prior)
+        }
         if (candidate == null) {
             borderStableFrames = 0
             borderCandidate = null
             return
         }
-        val prior = borderCandidate
         borderCandidate = candidate
         previewTvRect = candidate
         borderStableFrames = if (prior != null && rectClose(prior, candidate)) borderStableFrames + 1 else 1
-        statusMessage = "Fitting 16:9 TV border • stable $borderStableFrames/${CalibrationProtocol.STABLE_BORDER_FRAMES}"
+        statusMessage = "Snapping to 16:9 TV border • stable $borderStableFrames/${CalibrationProtocol.STABLE_BORDER_FRAMES}"
         if (borderStableFrames >= CalibrationProtocol.STABLE_BORDER_FRAMES) lockBorder(candidate)
     }
 
@@ -600,7 +605,7 @@ class Beta9CalibrationActivity : ComponentActivity() {
                     borderLocked = true
                     busy = false
                     autoProgress = "BORDER LOCKED"
-                    statusMessage = "BORDER LOCKED. The white/green box should sit on the TV edge. Press START VIDEO NOW, then start playback."
+                    statusMessage = "BORDER LOCKED. The box is snapped to the TV edge. Press START VIDEO NOW, then start playback."
                 }
             } catch (e: Exception) {
                 uiIfCurrent(token) {
@@ -635,7 +640,6 @@ class Beta9CalibrationActivity : ComponentActivity() {
         val frame = readPreviewFrame() ?: return
         var border = previewTvRect ?: return
 
-        // Refining at 5 Hz is enough for hand motion and avoids burning CPU on every 100 ms marker read.
         previewTick++
         if (previewTick % 2 == 0) {
             border = VideoSyncAnalyzer.refineBorder(frame, border)
@@ -658,18 +662,29 @@ class Beta9CalibrationActivity : ComponentActivity() {
         }
 
         statusMessage = "Marker: ${patch.label.uppercase()} • confidence ${"%.0f".format(reading.confidence * 100)}% • stable $markerStableFrames/${CalibrationProtocol.STABLE_MARKER_FRAMES}"
-        if (markerStableFrames < CalibrationProtocol.STABLE_MARKER_FRAMES || tvMeasurements.containsKey(patch)) {
-            if (tvMeasurements.containsKey(patch)) autoProgress = "TV ${tvMeasurements.size}/${CalibrationProtocol.tvSequence.size} • ${patch.label} already captured"
+        if (markerStableFrames < CalibrationProtocol.STABLE_MARKER_FRAMES) return
+
+        if (tvMeasurements.containsKey(patch)) {
+            autoProgress = "TV ${tvMeasurements.size}/${CalibrationProtocol.tvSequence.size} • ${patch.label} already captured"
+            if (patch == Patch.BLACK && missingTvPatches().isEmpty()) startLedPhaseFromExistingBlack()
             return
         }
 
-        // White establishes the locked camera exposure and RAW TV geometry. Do not collect later
-        // colors before that reference; they can be picked up on the next pass without losing data.
         if (patch != Patch.WHITE && !tvMeasurements.containsKey(Patch.WHITE)) {
             statusMessage = "Saw ${patch.label.uppercase()}, but WHITE has not been captured yet. Continue the video, then replay it once; captured values are retained."
             return
         }
         captureTvPatch(patch)
+    }
+
+    private fun startLedPhaseFromExistingBlack() {
+        if (busy || !videoArmed || missingTvPatches().isNotEmpty()) return
+        val camera = sampler ?: return
+        val token = generation
+        busy = true
+        videoArmed = false
+        statusMessage = "All TV references are present and final BLACK is on-screen. Starting LED-wall calibration…"
+        activeCaptureJob = executor.submit { runAutomaticLedPhase(camera, token) }
     }
 
     private fun captureTvPatch(patch: Patch) {
@@ -714,7 +729,10 @@ class Beta9CalibrationActivity : ComponentActivity() {
                         else -> "Captured ${patch.label.uppercase()}. Waiting for the next marker; missed colors can be recovered on another pass."
                     }
                 }
-                if (allCaptured && finalBlackOnScreen) runAutomaticLedPhase(camera, token)
+                if (allCaptured && finalBlackOnScreen) {
+                    videoArmed = false
+                    runAutomaticLedPhase(camera, token)
+                }
             } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
             } catch (e: Exception) {
@@ -741,6 +759,7 @@ class Beta9CalibrationActivity : ComponentActivity() {
             Thread.sleep(250)
             val white = camera.measureSpatial(samples = 5, timeoutMs = 7000)
             ledSpatialMeasurements[Patch.WHITE] = white
+            uiIfCurrent(token) { latestMeasurement = "LED White spatial field • ${camera.lastMeasurementSummary}" }
 
             client?.setColor(Patch.BLACK.rgb) ?: error("HyperHDR is not connected")
             Thread.sleep(CalibrationProtocol.LED_SETTLE_MS)
@@ -756,6 +775,7 @@ class Beta9CalibrationActivity : ComponentActivity() {
                 client?.setColor(patch.rgb) ?: error("HyperHDR is not connected")
                 Thread.sleep(CalibrationProtocol.LED_SETTLE_MS)
                 ledSpatialMeasurements[patch] = camera.measureSpatial(samples = 5, timeoutMs = 7000)
+                uiIfCurrent(token) { latestMeasurement = "LED ${patch.label} spatial field • ${camera.lastMeasurementSummary}" }
             }
 
             ensureCurrent(token)
@@ -988,7 +1008,7 @@ class Beta9CalibrationActivity : ComponentActivity() {
     }
 
     private fun restartForSameTarget() {
-        runCatching { client?.clear() }
+        clearPriorityAsync(client)
         closeCamera()
         resetMeasurements()
         generation++
@@ -999,14 +1019,22 @@ class Beta9CalibrationActivity : ComponentActivity() {
     private fun disconnectAndReturn() {
         generation++
         activeCaptureJob?.cancel(true)
-        runCatching { client?.clear() }
-        client?.close()
+        val old = client
         client = null
         closeCamera()
         resetMeasurements()
         selectedTarget = null
         stage = Stage.DISCOVERY
+        Thread {
+            runCatching { old?.clear() }
+            old?.close()
+        }.start()
         discoverTargets()
+    }
+
+    private fun clearPriorityAsync(target: HyperHdrClient?) {
+        if (target == null) return
+        Thread { runCatching { target.clear() } }.start()
     }
 
     private fun ensureCurrent(token: Int) {
