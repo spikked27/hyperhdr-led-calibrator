@@ -53,17 +53,15 @@ object CalibrationEngine {
         return CHROMATIC_PATCHES.map { chromaError(t(it), l(it)) }.average()
     }
 
-    /** Report the dedicated white-point mismatch separately from RGB/CMY calibration quality. */
+    /**
+     * Dedicated white-point mismatch, measured independently of brightness. Unlike RGB/CMY error,
+     * this must NOT white-reference each path to itself or the answer would always be zero.
+     */
     fun measuredWhitePointError(tv: Map<Patch, Rgb>, led: Map<Patch, Rgb>): Double {
         require(tv.keys.containsAll(Patch.entries) && led.keys.containsAll(Patch.entries)) { "Missing calibration measurements" }
-        val tvBlack = tv.getValue(Patch.BLACK)
-        val ledBlack = led.getValue(Patch.BLACK)
-        val tvWhite = tv.getValue(Patch.WHITE)
-        val ledWhite = led.getValue(Patch.WHITE)
-        return chromaError(
-            whiteReferenced(tvWhite, tvBlack, tvWhite),
-            whiteReferenced(ledWhite, ledBlack, ledWhite),
-        )
+        val tvSignal = subtract(tv.getValue(Patch.WHITE), tv.getValue(Patch.BLACK))
+        val ledSignal = subtract(led.getValue(Patch.WHITE), led.getValue(Patch.BLACK))
+        return chromaError(tvSignal, ledSignal)
     }
 
     fun solve(tv: Map<Patch, Rgb>, led: Map<Patch, Rgb>): CalibrationResult {
@@ -118,7 +116,7 @@ object CalibrationEngine {
             chromaError(t(patch), predicted)
         }.average()
 
-        val whiteMismatch = chromaError(t(Patch.WHITE), l(Patch.WHITE))
+        val whiteMismatch = measuredWhitePointError(tv, led)
         val warnings = mutableListOf<String>()
         if (after > before * 0.90) {
             warnings += "The mathematical RGB/CMY correction predicts little improvement; repeat the run and verify the TV rectangle and camera lens."
