@@ -45,10 +45,12 @@ class CalibrationEngineTest {
         assertTrue(failed)
     }
 
-    @Test fun dedicatedWhiteDoesNotPolluteRgbCmyMetric() {
+    @Test fun channelGainIsRemovedByWhiteReference() {
         val tv=allIdeal()
-        val led=allIdeal().toMutableMap()
-        led[Patch.WHITE]=Rgb(1.0,0.72,0.58)
+        val gains=Rgb(1.0,0.72,0.58)
+        val led=allIdeal().mapValues { (patch,c) ->
+            if (patch == Patch.BLACK) c else Rgb(c.r*gains.r,c.g*gains.g,c.b*gains.b)
+        }
         assertTrue(CalibrationEngine.measuredChromaticError(tv,led) < 1e-6)
     }
 }
