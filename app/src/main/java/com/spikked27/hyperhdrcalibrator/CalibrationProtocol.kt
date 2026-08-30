@@ -3,7 +3,7 @@ package com.spikked27.hyperhdrcalibrator
 /**
  * Shared protocol between the automated camera workflow and the companion calibration video.
  *
- * Beta 9.2 keeps synchronization independent of apparent camera RGB. Each TV patch carries a
+ * Beta 9.3 keeps synchronization independent of apparent camera RGB. Each TV patch carries a
  * high-contrast machine-readable marker near the screen edge; RAW/YUV spatial capture remains the
  * source of the actual calibration measurement.
  */
@@ -14,7 +14,11 @@ object CalibrationProtocol {
     const val BORDER_COUNTDOWN_SECONDS = 5
 
     const val TV_PATCH_SECONDS = 15
-    const val FINAL_BLACK_SECONDS = 120
+
+    // Beta 9.3 performs the original raw LED characterization plus two processed-output passes:
+    // current installed calibration and the newly solved candidate. Six minutes total video gives
+    // those measurements comfortable time while the TV remains on the final BLACK marker.
+    const val FINAL_BLACK_SECONDS = 240
 
     val tvSequence: List<Patch> = listOf(
         Patch.WHITE,
@@ -53,4 +57,10 @@ object CalibrationProtocol {
 
     const val LED_SETTLE_MS = 700L
     const val WHITE_EXPOSURE_SETTLE_MS = 1200L
+
+    // Closed-loop validation uses fewer frames than the characterization pass but the same locked
+    // camera/exposure and spatial wall model. This keeps the verification within final-black time.
+    const val VALIDATION_SAMPLES = 3
+    const val VALIDATION_SETTLE_MS = 700L
+    const val VALIDATION_CAPTURE_TIMEOUT_MS = 5500L
 }
