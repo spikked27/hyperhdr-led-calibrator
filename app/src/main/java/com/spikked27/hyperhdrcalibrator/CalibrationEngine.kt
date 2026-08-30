@@ -38,6 +38,34 @@ object CalibrationEngine {
         )
     }
 
+    /**
+     * Measured RGB/CMY chromatic error. WHITE is intentionally excluded because the current solver
+     * keeps the dedicated W path at [255,255,255] instead of auto-correcting its white point.
+     */
+    fun measuredChromaticError(tv: Map<Patch, Rgb>, led: Map<Patch, Rgb>): Double {
+        require(tv.keys.containsAll(Patch.entries) && led.keys.containsAll(Patch.entries)) { "Missing calibration measurements" }
+        val tvBlack = tv.getValue(Patch.BLACK)
+        val ledBlack = led.getValue(Patch.BLACK)
+        val tvWhite = tv.getValue(Patch.WHITE)
+        val ledWhite = led.getValue(Patch.WHITE)
+        fun t(p: Patch) = whiteReferenced(tv.getValue(p), tvBlack, tvWhite)
+        fun l(p: Patch) = whiteReferenced(led.getValue(p), ledBlack, ledWhite)
+        return CHROMATIC_PATCHES.map { chromaError(t(it), l(it)) }.average()
+    }
+
+    /** Report the dedicated white-point mismatch separately from RGB/CMY calibration quality. */
+    fun measuredWhitePointError(tv: Map<Patch, Rgb>, led: Map<Patch, Rgb>): Double {
+        require(tv.keys.containsAll(Patch.entries) && led.keys.containsAll(Patch.entries)) { "Missing calibration measurements" }
+        val tvBlack = tv.getValue(Patch.BLACK)
+        val ledBlack = led.getValue(Patch.BLACK)
+        val tvWhite = tv.getValue(Patch.WHITE)
+        val ledWhite = led.getValue(Patch.WHITE)
+        return chromaError(
+            whiteReferenced(tvWhite, tvBlack, tvWhite),
+            whiteReferenced(ledWhite, ledBlack, ledWhite),
+        )
+    }
+
     fun solve(tv: Map<Patch, Rgb>, led: Map<Patch, Rgb>): CalibrationResult {
         require(tv.keys.containsAll(Patch.entries) && led.keys.containsAll(Patch.entries)) { "Missing calibration measurements" }
         val tvBlack = tv.getValue(Patch.BLACK)
@@ -48,8 +76,9 @@ object CalibrationEngine {
         fun t(p: Patch) = whiteReferenced(tv.getValue(p), tvBlack, tvWhite)
         fun l(p: Patch) = whiteReferenced(led.getValue(p), ledBlack, ledWhite)
 
-        // Do NOT normalize each LED primary independently here. Their relative strength at the fixed
-        // LED exposure is useful: it tells us how much of each command is needed to reach a target hue.
+        // The raw hardware basis is measured with HyperHDR's static COMP_COLOR path. HyperHDR
+        // deliberately bypasses Infinite Color Engine processing for that component, so these are
+        // absolute hardware primaries even if a prior calibration is already installed.
         val ledBasis = Matrix3.columns(l(Patch.RED), l(Patch.GREEN), l(Patch.BLUE))
         val invLed = ledBasis.inverse()
 
@@ -79,25 +108,23 @@ object CalibrationEngine {
             targets[patch] = nonNegative.normalized().to255()
         }
 
-        val validationPatches = listOf(Patch.RED, Patch.GREEN, Patch.BLUE, Patch.CYAN, Patch.MAGENTA, Patch.YELLOW, Patch.WHITE)
-        val before = validationPatches.map { chromaError(t(it), l(it)) }.average()
-        val after = validationPatches.map { patch ->
-            if (patch == Patch.WHITE) {
-                chromaError(t(Patch.WHITE), l(Patch.WHITE))
-            } else {
-                val q = targets.getValue(patch)
-                val predicted = ledBasis * Rgb(q[0] / 255.0, q[1] / 255.0, q[2] / 255.0)
-                chromaError(t(patch), predicted)
-            }
+        // These are only model predictions from the raw characterization. Beta 9.3 performs a
+        // separate camera re-measurement through COMP_IMAGE after applying the candidate and reports
+        // that measured result to the user as the actual validation.
+        val before = CHROMATIC_PATCHES.map { chromaError(t(it), l(it)) }.average()
+        val after = CHROMATIC_PATCHES.map { patch ->
+            val q = targets.getValue(patch)
+            val predicted = ledBasis * Rgb(q[0] / 255.0, q[1] / 255.0, q[2] / 255.0)
+            chromaError(t(patch), predicted)
         }.average()
 
         val whiteMismatch = chromaError(t(Patch.WHITE), l(Patch.WHITE))
         val warnings = mutableListOf<String>()
         if (after > before * 0.90) {
-            warnings += "The measured RGB/CMY correction provides little chromatic improvement; repeat the run and verify the TV rectangle and camera lens."
+            warnings += "The mathematical RGB/CMY correction predicts little improvement; repeat the run and verify the TV rectangle and camera lens."
         }
         if (whiteMismatch > 2.5) {
-            warnings += "Dedicated W does not closely match TV white (camera chroma error ${"%.2f".format(whiteMismatch)}). White was intentionally kept [255,255,255] so neutral white remains W-only; tune the physical W white point separately if desired."
+            warnings += "Dedicated W does not closely match TV white (camera chroma error ${"%.2f".format(whiteMismatch)}). White is intentionally kept [255,255,255] and reported separately from RGB/CMY calibration."
         }
 
         return CalibrationResult(
@@ -107,4 +134,13 @@ object CalibrationEngine {
             warning = warnings.takeIf { it.isNotEmpty() }?.joinToString(" "),
         )
     }
+
+    private val CHROMATIC_PATCHES = listOf(
+        Patch.RED,
+        Patch.GREEN,
+        Patch.BLUE,
+        Patch.CYAN,
+        Patch.MAGENTA,
+        Patch.YELLOW,
+    )
 }
