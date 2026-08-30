@@ -14,6 +14,7 @@ class CalibrationEngineTest {
         Patch.entries.forEach { assertContentEquals(it.rgb,r.targets.getValue(it),it.label) }
         assertTrue(r.estimatedErrorAfter < 1e-6)
         assertTrue(CalibrationEngine.measuredChromaticError(m,m) < 1e-6)
+        assertTrue(CalibrationEngine.measuredWhitePointError(m,m) < 1e-6)
     }
 
     @Test fun ambientBlackOffsetIsRemoved() {
@@ -50,6 +51,6 @@ class CalibrationEngineTest {
         val led=allIdeal().toMutableMap()
         led[Patch.WHITE]=Rgb(1.0,0.72,0.58)
         assertTrue(CalibrationEngine.measuredChromaticError(tv,led) < 1e-6)
-        assertTrue(CalibrationEngine.measuredWhitePointError(tv,led) < 1e-6)
+        assertTrue(CalibrationEngine.measuredWhitePointError(tv,led) > 5.0)
     }
 }
