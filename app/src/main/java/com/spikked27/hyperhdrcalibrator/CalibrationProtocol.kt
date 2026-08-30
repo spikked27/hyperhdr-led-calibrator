@@ -3,14 +3,22 @@ package com.spikked27.hyperhdrcalibrator
 /**
  * Shared protocol between the automated camera workflow and the companion calibration video.
  *
- * The app does not rely on wall-clock timing to identify TV colors; it recognizes the actual
- * full-screen patch. These timings are deliberately generous so RAW bursts can complete even on
- * slower phones or after a brief YouTube playback hiccup.
+ * Beta 9.3 keeps synchronization independent of apparent camera RGB. Each TV patch carries a
+ * high-contrast machine-readable marker near the screen edge; RAW/YUV spatial capture remains the
+ * source of the actual calibration measurement.
  */
 object CalibrationProtocol {
-    const val VIDEO_LEAD_IN_SECONDS = 6
-    const val TV_PATCH_SECONDS = 10
-    const val FINAL_BLACK_SECONDS = 120
+    // The user presses READY and starts playback immediately. The app keeps the LEDs WHITE during a
+    // 5 s framing countdown, then has roughly 10 s of remaining black video to acquire the TV edge.
+    const val VIDEO_LEAD_IN_SECONDS = 15
+    const val BORDER_COUNTDOWN_SECONDS = 5
+
+    const val TV_PATCH_SECONDS = 15
+
+    // Beta 9.3 performs the original raw LED characterization plus two processed-output passes:
+    // current installed calibration and the newly solved candidate. Six minutes total video gives
+    // those measurements comfortable time while the TV remains on the final BLACK marker.
+    const val FINAL_BLACK_SECONDS = 240
 
     val tvSequence: List<Patch> = listOf(
         Patch.WHITE,
@@ -34,10 +42,25 @@ object CalibrationProtocol {
         Patch.BLACK,
     )
 
-    const val PREVIEW_SAMPLE_WIDTH = 72
-    const val PREVIEW_SAMPLE_HEIGHT = 40
-    const val PREVIEW_TICK_MS = 120L
+    // Preserve the actual TextureView aspect instead of forcing portrait camera pixels into a
+    // landscape 320x180 bitmap. The long edge is capped at 320 px for lightweight live analysis.
+    const val PREVIEW_SAMPLE_LONG_EDGE = 320
+    const val PREVIEW_SAMPLE_SHORT_EDGE_MIN = 120
+    const val PREVIEW_TICK_MS = 100L
+    const val STABLE_MARKER_FRAMES = 3
+    const val STABLE_BORDER_FRAMES = 6
+
+    // Kept because the older Beta 8 activity remains in the source tree as a rollback reference.
+    const val PREVIEW_SAMPLE_WIDTH = 320
+    const val PREVIEW_SAMPLE_HEIGHT = 180
     const val STABLE_PREVIEW_FRAMES = 4
+
     const val LED_SETTLE_MS = 700L
     const val WHITE_EXPOSURE_SETTLE_MS = 1200L
+
+    // Closed-loop validation uses fewer frames than the characterization pass but the same locked
+    // camera/exposure and spatial wall model. This keeps the verification within final-black time.
+    const val VALIDATION_SAMPLES = 3
+    const val VALIDATION_SETTLE_MS = 700L
+    const val VALIDATION_CAPTURE_TIMEOUT_MS = 5500L
 }
