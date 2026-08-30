@@ -39,8 +39,10 @@ object CalibrationEngine {
     }
 
     /**
-     * Measured RGB/CMY chromatic error. WHITE is intentionally excluded because the current solver
-     * keeps the dedicated W path at [255,255,255] instead of auto-correcting its white point.
+     * Measured RGB/CMY chromatic error. WHITE is intentionally excluded. The wall path is
+     * channel-wise referenced to its own white specifically to cancel wall reflectance and camera
+     * channel gain, so that method cannot independently determine the dedicated W diode's absolute
+     * white point. Beta 9.3 therefore reports only RGB/CMY validation and leaves W unchanged.
      */
     fun measuredChromaticError(tv: Map<Patch, Rgb>, led: Map<Patch, Rgb>): Double {
         require(tv.keys.containsAll(Patch.entries) && led.keys.containsAll(Patch.entries)) { "Missing calibration measurements" }
@@ -51,17 +53,6 @@ object CalibrationEngine {
         fun t(p: Patch) = whiteReferenced(tv.getValue(p), tvBlack, tvWhite)
         fun l(p: Patch) = whiteReferenced(led.getValue(p), ledBlack, ledWhite)
         return CHROMATIC_PATCHES.map { chromaError(t(it), l(it)) }.average()
-    }
-
-    /**
-     * Dedicated white-point mismatch, measured independently of brightness. Unlike RGB/CMY error,
-     * this must NOT white-reference each path to itself or the answer would always be zero.
-     */
-    fun measuredWhitePointError(tv: Map<Patch, Rgb>, led: Map<Patch, Rgb>): Double {
-        require(tv.keys.containsAll(Patch.entries) && led.keys.containsAll(Patch.entries)) { "Missing calibration measurements" }
-        val tvSignal = subtract(tv.getValue(Patch.WHITE), tv.getValue(Patch.BLACK))
-        val ledSignal = subtract(led.getValue(Patch.WHITE), led.getValue(Patch.BLACK))
-        return chromaError(tvSignal, ledSignal)
     }
 
     fun solve(tv: Map<Patch, Rgb>, led: Map<Patch, Rgb>): CalibrationResult {
@@ -88,8 +79,8 @@ object CalibrationEngine {
                     continue
                 }
                 Patch.WHITE -> {
-                    // With the RGBW mixer threshold at 1.0, equal RGB reaches the dedicated W diode.
-                    // Keep neutral white W-only instead of secretly adding RGB just to correct its tint.
+                    // White cannot be independently characterized through a colored wall after
+                    // channel-wise white referencing. Preserve neutral W-only behavior.
                     targets[patch] = intArrayOf(255, 255, 255)
                     continue
                 }
@@ -116,13 +107,9 @@ object CalibrationEngine {
             chromaError(t(patch), predicted)
         }.average()
 
-        val whiteMismatch = measuredWhitePointError(tv, led)
         val warnings = mutableListOf<String>()
         if (after > before * 0.90) {
             warnings += "The mathematical RGB/CMY correction predicts little improvement; repeat the run and verify the TV rectangle and camera lens."
-        }
-        if (whiteMismatch > 2.5) {
-            warnings += "Dedicated W does not closely match TV white (camera chroma error ${"%.2f".format(whiteMismatch)}). White is intentionally kept [255,255,255] and reported separately from RGB/CMY calibration."
         }
 
         return CalibrationResult(
@@ -132,6 +119,8 @@ object CalibrationEngine {
             warning = warnings.takeIf { it.isNotEmpty() }?.joinToString(" "),
         )
     }
+
+    val chromaticPatches: List<Patch> get() = CHROMATIC_PATCHES
 
     private val CHROMATIC_PATCHES = listOf(
         Patch.RED,
